@@ -17,6 +17,12 @@ input:
   cache_mtx: true
   counts_layer: null
   normalized_layer: null
+  guide_table: null
+  guide_table_cell_column: cell
+  guide_table_gene_column: gene
+  guide_table_guide_column: sgrna
+  guide_table_count_column: umi_count
+  guide_table_strip_prefix: true
 metadata:
   file: null
   key_column: lane_id
@@ -89,6 +95,15 @@ enrichment:
   guide_concordance: true
   min_cells_per_guide: 5
   permutations: 1000
+  top_n_report: 12
+ps_score:
+  enabled: true
+  require: false
+  top_n_biomarkers: 100
+  scale_factor: 3.0
+  ps_threshold: 0.5
+  min_cells_per_target: 10
+  min_control_cells: 10
   top_n_report: 12
 report:
   title: Perturb-seq analysis report

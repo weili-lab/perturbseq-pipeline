@@ -279,7 +279,78 @@ Two members of one complex landing on the same phenotype, from independent
 guides, is the analysis validating itself — no prior knowledge of the complexes
 enters the computation.
 
-## 7. Figures and the report
+## 7. Per-cell perturbation response (PS_python)
+
+Sections 5 and 6 treat every cell carrying a guide as one group. A perturbed
+population is rarely uniform, though: some cells are genuinely knocked down
+while others escape entirely. This stage adds the per-cell view by delegating to
+[**PS_python**](https://github.com/weili-lab/PS_python), the lab's implementation
+of the scMAGeCK perturbation score.
+
+`pertps` is an **optional dependency** — the algorithm stays maintained in its
+own repository rather than being copied here:
+
+```bash
+pip install -e ".[ps]"
+```
+
+When it is absent the stage is skipped and the report says so explicitly; set
+`ps_score.require: true` to make a missing install a hard failure instead.
+
+### What it computes
+
+For each target, `pertps` finds the genes that respond most to the perturbation
+(target cells versus non-targeting controls), fits the perturbation's expression
+signature by ordinary least squares, and projects every cell onto it. The result
+is a score per cell, shifted so the control mean is zero and scaled to [0, 1].
+
+The pipeline adapts its own vocabulary to what `pertps` expects
+(`obs['target_gene']` → `obs['gene']`, the NTC label → `Non-Targeting`) and hands
+it the **log-normalized layer explicitly** — the score is a projection of
+expression, so feeding scaled values would silently change it.
+
+### Quadrants
+
+Combining the score with the target's own expression classifies each perturbed
+cell:
+
+| Quadrant | Score | Target expression | Meaning |
+|---|---|---|---|
+| successful knockdown | high | below control median | the perturbation worked |
+| escaper | high | above control median | carries the guide, still expresses the gene |
+| non-responder | low | above | indistinguishable from unperturbed |
+| low signal | low | below | uninformative, often low quality |
+
+The vertical cut is `ps_score.ps_threshold` (0.5, matching the PS_python demo);
+the horizontal cut is the control population's median expression.
+
+### The unexpressed-gene guard
+
+A gene the controls do not express has a control median of zero, so **every**
+cell falls on the "low expression" side and any high score is misread as a
+successful knockdown. Without a guard the olfactory-receptor controls topped the
+knockdown-efficiency ranking on the demo lane — OR2D3 at 51%, OR6A2 at 39% — a
+pure artefact of the cut.
+
+Targets below `perturbation.min_pct_expressing_control` in control cells are
+therefore reported as untestable here too, the same rule the perturbation-
+strength stage uses. On the demo lane that removes every OR gene plus LEF1 and
+KLF4, leaving 46 of 54 targets scored.
+
+### Agreement with the group-level test
+
+The two measurements are deliberately compared, but they are **not** measuring
+the same quantity: the group-level test looks at the target's own expression,
+while the score projects cells onto the perturbation's whole downstream
+signature. A gene can be strongly knocked down yet change little downstream, or
+the reverse.
+
+Observed correlations are correspondingly modest — Pearson r = **-0.285** on the
+demo lane (the expected direction: stronger knockdown, more confirmed cells) and
+**+0.12** on the PS_python demo subset. The figure reports what the data show
+rather than asserting the methods validate each other.
+
+## 8. Figures and the report
 
 Every figure passes through a registry that records its path, title, caption and
 section, so a figure cannot be produced without being reachable from the report.

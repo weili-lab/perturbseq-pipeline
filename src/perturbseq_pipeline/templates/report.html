@@ -82,6 +82,7 @@
   <a href="#clustering">2. Clustering</a>
   <a href="#perturbation">3. Perturbation strength</a>
   {% if enrichment %}<a href="#enrichment">4. Cluster enrichment</a>{% endif %}
+  {% if ps %}<a href="#ps">5. Per-cell response</a>{% endif %}
   <a href="#outputs">Outputs</a>
 </p>
 
@@ -269,6 +270,61 @@
   </div>
 </div>
 {% endif %}
+{% endif %}
+
+<!-- ===================== 5. Per-cell scores ===================== -->
+{% if ps %}
+<h2 id="ps">5. Per-cell perturbation response</h2>
+<p class="lede">
+  Sections 3 and 4 treat all cells carrying a guide as one group. But a perturbed
+  population is rarely uniform: some cells are genuinely knocked down while
+  others escape. This section scores <b>each cell individually</b> using
+  <a href="https://github.com/weili-lab/PS_python">PS_python</a>
+  (<code>pertps {{ ps.version }}</code>), the lab's implementation of the
+  scMAGeCK perturbation score — it learns the expression signature of each
+  perturbation and projects every cell onto it.
+</p>
+
+<div class="note">
+  Each perturbed cell is placed in one of four quadrants by its score (cut at
+  {{ ps.threshold }}) and by the target's own expression relative to the control
+  median:
+  <ul>
+    <li><b>Successful knockdown</b> — high score, low expression.</li>
+    <li><b>Escaper</b> — high score, but the gene is still expressed.</li>
+    <li><b>Non-responder</b> — low score, normal expression.</li>
+    <li><b>Low signal</b> — low score and low expression; uninformative.</li>
+  </ul>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="v">{{ ps.n_targets }}</div><div class="k">Targets scored</div></div>
+  <div class="card"><div class="v">{{ ps.median_kd }}%</div><div class="k">Median knocked down</div></div>
+  <div class="card"><div class="v">{{ ps.median_escaper }}%</div><div class="k">Median escapers</div></div>
+  <div class="card"><div class="v">{{ ps.best }}</div><div class="k">Best knockdown ({{ ps.best_kd }}%)</div></div>
+</div>
+
+<h3>5.1 Knockdown efficiency across targets</h3>
+{% for f in figures.ps %}{{ render_figure(f) }}{% endfor %}
+
+<h3>5.2 Per-target summary</h3>
+<div class="scroll">{{ tables.ps_score }}</div>
+
+<h3>5.3 Per-cell outcome for the strongest targets</h3>
+{% for f in figures.ps_per_target %}{{ render_figure(f) }}{% endfor %}
+
+{% if ps_extras %}
+<div class="note">
+  <b>{{ ps_extras|length }} further per-target score figures</b> are in
+  <code>{{ ps_per_target_dir }}</code>:
+  <div class="filelist">
+    {% for name in ps_extra_names %}<div>{{ name }}</div>{% endfor %}
+  </div>
+</div>
+{% endif %}
+{% elif ps_note %}
+<h2 id="ps">5. Per-cell perturbation response</h2>
+<div class="warn"><b>This section was skipped.</b> {{ ps_note }}</div>
 {% endif %}
 
 <!-- ===================== Outputs ===================== -->

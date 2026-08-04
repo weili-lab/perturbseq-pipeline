@@ -29,6 +29,8 @@ from .plots import (
     SECTION_GUIDES,
     SECTION_PER_GENE,
     SECTION_PERTURBATION,
+    SECTION_PS,
+    SECTION_PS_PER_TARGET,
     SECTION_QC,
     FigureRecord,
     FigureRegistry,
@@ -47,6 +49,7 @@ class ReportInputs:
     registry: FigureRegistry
     perturbation: PerturbationResults
     enrichment: object = None
+    ps: object = None
     tables: Dict[str, pd.DataFrame] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
     summary_cards: List[tuple] = field(default_factory=list)
@@ -113,6 +116,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         "per_gene": reg.by_section(SECTION_PER_GENE),
         "enrichment": reg.by_section(SECTION_ENRICHMENT),
         "enrichment_per_target": reg.by_section(SECTION_ENRICH_PER_TARGET),
+        "ps": reg.by_section(SECTION_PS),
+        "ps_per_target": reg.by_section(SECTION_PS_PER_TARGET),
     }
     extras = reg.extras(SECTION_PER_GENE)
     enrich_extras = reg.extras(SECTION_ENRICH_PER_TARGET)
@@ -128,6 +133,7 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "skipped",
             "manifest",
             "enrichment",
+            "ps_score",
         )
     }
     tables_html["outputs"] = _df_to_html(
@@ -168,6 +174,25 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             ),
         }
 
+    ps = inputs.ps
+    ps_ctx = None
+    if ps is not None and not ps.summary.empty:
+        summ = ps.summary
+        ps_ctx = {
+            "n_targets": int(len(summ)),
+            "threshold": ps.ps_threshold,
+            "median_kd": f"{summ['pct_successful_kd'].median():.0f}",
+            "median_escaper": f"{summ['pct_escaper'].median():.0f}",
+            "best": summ.iloc[0]["target_gene"],
+            "best_kd": f"{summ.iloc[0]['pct_successful_kd']:.0f}",
+            "worst_escaper": summ.sort_values("pct_escaper").iloc[-1]["target_gene"],
+            "worst_escaper_pct": f"{summ['pct_escaper'].max():.0f}",
+            "n_skipped": int(len(ps.skipped)),
+            "version": _pertps_version_or_none(),
+        }
+    ps_note = ps.note if ps is not None and ps.note else ""
+    ps_extras = reg.extras(SECTION_PS_PER_TARGET)
+
     controls_described = " and ".join(CONTROL_LABELS[c] for c in res.controls_used)
     primary_fallback = res.primary_control != cfg.perturbation.primary_control
 
@@ -205,6 +230,11 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         n_top_shown=len(figures["per_gene"]),
         extra_figures=extras,
         extra_figure_names=[f"{r.name}.{cfg.report.figure_format}" for r in extras],
+        ps=ps_ctx,
+        ps_note=ps_note,
+        ps_extras=ps_extras,
+        ps_extra_names=[f"{r.name}.{cfg.report.figure_format}" for r in ps_extras],
+        ps_per_target_dir=str(reg.figdir / SECTION_PS_PER_TARGET),
         enrichment=enrichment_ctx,
         enrichment_extras=enrich_extras,
         enrichment_extra_names=[
@@ -222,6 +252,15 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
     path.write_text(html, encoding="utf-8")
     logger.info("Wrote report %s (%.1f MB)", path, path.stat().st_size / 1e6)
     return path
+
+
+def _pertps_version_or_none() -> str:
+    try:
+        import pertps
+
+        return getattr(pertps, "__version__", "unknown")
+    except Exception:  # pragma: no cover - optional dependency
+        return "not installed"
 
 
 def _config_yaml(cfg: Config) -> str:

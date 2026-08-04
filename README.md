@@ -56,6 +56,21 @@ On the demo lane this recovers SMARCC1 (core SWI/SNF) taking over one cluster,
 and EZH2 with SUZ12 — both core PRC2 subunits — independently landing in the
 same one.
 
+**5 · Per-cell perturbation response** *(optional)*
+Sections 3 and 4 treat all cells carrying a guide as one group, but a perturbed
+population is rarely uniform. This stage scores **each cell** using
+[PS_python](https://github.com/weili-lab/PS_python), the lab's scMAGeCK-style
+perturbation score, and combines it with the target's own expression to separate
+**confirmed knockdowns** from **escapers** — cells that carry the guide and show
+the signature yet still express the gene.
+
+```bash
+pip install -e ".[ps]"    # brings in pertps from PS_python
+```
+
+Without the extra the stage is skipped and the report says so; set
+`ps_score.require: true` to make it a hard failure.
+
 ---
 
 ## Install
@@ -136,10 +151,20 @@ input:
   guide_h5ad: /path/to/my_guides.h5ad
   # (c) a pre-computed per-cell label, e.g. a Seurat 'genotype' column:
   guide_obs_column: genotype
+  # (d) a barcode -> guide table (the PS_python demo layout):
+  guide_table: BARCODE_10x_Merged.txt
 
   # Seurat exports often keep counts in X and log values in a layer:
   normalized_layer: logcounts
+  # ...or use "X" when the object holds only normalized values and no counts:
+  # normalized_layer: "X"
 ```
+
+A barcode table lists one row per detected guide per cell, so a cell with two
+guides appears twice. The pipeline resolves those with the **same dominance rule
+as the count-matrix path** (top guide must clear `guides.min_umi` and beat the
+runner-up by `guides.dominance_ratio`) rather than keeping whichever row came
+last, which would pick a guide at random for every multiplet.
 
 ### Sample metadata
 

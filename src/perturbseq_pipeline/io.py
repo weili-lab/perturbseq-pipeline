@@ -217,6 +217,12 @@ def _load_h5ad(cfg: Config) -> LoadedData:
         _ensure_counts_layer(expr)
         return LoadedData(expr, guides, "matrix", lanes)
 
+    if cfg.input.guide_table:
+        labels = read_guide_table(cfg, adata.obs_names)
+        adata.obs[RAW_GUIDE_LABEL] = labels.to_numpy()
+        _ensure_counts_layer(adata)
+        return LoadedData(adata, None, "obs_label", lanes)
+
     col = cfg.input.guide_obs_column
     if col:
         if col not in adata.obs.columns:
@@ -349,13 +355,26 @@ def apply_layer_choices(adata: ad.AnnData, cfg: Config) -> ad.AnnData:
         _ensure_counts_layer(adata)
 
     if norm_layer:
-        if norm_layer not in adata.layers:
+        if norm_layer == "X":
+            # Shared/subset objects often carry only normalized values, with no
+            # raw counts anywhere. Re-normalizing those would corrupt them.
+            adata.layers["lognorm"] = adata.X.copy()
+            logger.info("input.normalized_layer='X': treating X as log-normalized")
+            if not counts_layer:
+                logger.warning(
+                    "No raw counts are available in this object, so count-based "
+                    "QC metrics (total_counts, n_genes_by_counts) are derived "
+                    "from normalized values and are approximate."
+                )
+        elif norm_layer not in adata.layers:
             raise ValueError(
                 f"input.normalized_layer={norm_layer!r} not found. "
-                f"Available layers: {sorted(adata.layers.keys())}"
+                f"Available layers: {sorted(adata.layers.keys())}. "
+                "Use 'X' when the object's X already holds log-normalized values."
             )
-        adata.layers["lognorm"] = adata.layers[norm_layer].copy()
-        logger.info("Using layer %r as log-normalized expression", norm_layer)
+        else:
+            adata.layers["lognorm"] = adata.layers[norm_layer].copy()
+            logger.info("Using layer %r as log-normalized expression", norm_layer)
 
     return adata
 
@@ -427,6 +446,87 @@ def attach_sample_metadata(
         adata.obs["sample_id"] = adata.obs[LANE_KEY].astype(str)
     logger.info("Merged %d metadata column(s): %s", len(new_cols), new_cols)
     return adata
+
+
+def read_guide_table(cfg: Config, obs_names: pd.Index) -> pd.Series:
+    """Resolve a barcode -> guide table into one label per cell.
+
+    This is the layout used by PS_python's demo (``BARCODE_10x_Merged.txt``):
+    one row per detected guide per cell, so a cell with two guides appears
+    twice. Collapsing that with a plain dict build keeps whichever row happened
+    to come last, which silently picks a guide at random for every multiplet.
+
+    Instead the same dominance rule as the count-matrix path is applied when a
+    UMI-count column is available: the top guide must reach ``guides.min_umi``
+    and beat the runner-up by ``guides.dominance_ratio``, otherwise the cell is
+    ambiguous. Without counts, cells with conflicting guides are ambiguous.
+    """
+    icfg = cfg.input
+    path = Path(icfg.guide_table)
+    if not path.is_file():
+        raise FileNotFoundError(f"input.guide_table not found: {path}")
+
+    sep = "\t" if path.suffix.lower() in (".tsv", ".txt", ".tab") else ","
+    table = pd.read_csv(path, sep=sep)
+    cell_col, gene_col = icfg.guide_table_cell_column, icfg.guide_table_gene_column
+    for col in (cell_col, gene_col):
+        if col not in table.columns:
+            raise ValueError(
+                f"input.guide_table {path} has no {col!r} column "
+                f"(columns: {list(table.columns)}). Set "
+                "input.guide_table_cell_column / _gene_column to match."
+            )
+
+    barcodes = table[cell_col].astype(str)
+    if icfg.guide_table_strip_prefix:
+        # Library prefixes such as 'S1L1_AAACCC...-1' -> 'AAACCC...-1'.
+        barcodes = barcodes.str.rsplit("_", n=1).str[-1]
+    table = table.assign(_barcode=barcodes)
+
+    count_col = icfg.guide_table_count_column
+    has_counts = bool(count_col) and count_col in table.columns
+
+    gcfg = cfg.guides
+    labels: Dict[str, str] = {}
+    if has_counts:
+        table = table.sort_values(count_col, ascending=False)
+        for barcode, rows in table.groupby("_barcode", sort=False):
+            counts = rows[count_col].to_numpy(dtype=float)
+            top = float(counts[0])
+            second = float(counts[1]) if len(counts) > 1 else 0.0
+            if top < max(gcfg.min_umi, 1):
+                labels[barcode] = gcfg.unassigned_label
+            elif top > gcfg.dominance_ratio * second:
+                labels[barcode] = str(rows.iloc[0][gene_col])
+            else:
+                labels[barcode] = gcfg.ambiguous_label
+    else:
+        logger.warning(
+            "input.guide_table has no %r column; cells with more than one guide "
+            "are marked ambiguous rather than resolved by count.",
+            count_col,
+        )
+        for barcode, rows in table.groupby("_barcode", sort=False):
+            genes = set(rows[gene_col].astype(str))
+            labels[barcode] = genes.pop() if len(genes) == 1 else gcfg.ambiguous_label
+
+    out = pd.Series(
+        [labels.get(str(b), gcfg.unassigned_label) for b in obs_names], index=obs_names
+    )
+    matched = int((out != gcfg.unassigned_label).sum())
+    if matched == 0:
+        raise ValueError(
+            f"No barcode in {path} matched the matrix. Example matrix barcode: "
+            f"{obs_names[0]!r}; example table barcode: {barcodes.iloc[0]!r}. "
+            "Check input.guide_table_strip_prefix."
+        )
+    logger.info(
+        "Guide table: %d/%d cells assigned a label from %s",
+        matched,
+        len(obs_names),
+        path.name,
+    )
+    return out
 
 
 def read_sample_metadata(path: str, key_column: str) -> pd.DataFrame:

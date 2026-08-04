@@ -54,6 +54,8 @@ SECTION_PERTURBATION = "perturbation"
 SECTION_PER_GENE = "perturbation/per_gene"
 SECTION_ENRICHMENT = "enrichment"
 SECTION_ENRICH_PER_TARGET = "enrichment/per_target"
+SECTION_PS = "ps_score"
+SECTION_PS_PER_TARGET = "ps_score/per_target"
 
 _CLASS_COLORS = {
     CLASS_TARGETING: "#2b6cb0",
@@ -1153,3 +1155,212 @@ def cl_has_hit(rows: pd.DataFrame, cluster) -> bool:
         return bool(rows.at[cluster, "significant"])
     except (KeyError, ValueError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# Perturbation-score figures (pertps / PS_python)
+# ---------------------------------------------------------------------------
+
+
+def plot_ps_scores(expr, results, perturbation_results, reg: FigureRegistry, cfg: Config) -> None:
+    """Quadrant scatters, a knockdown-efficiency ranking and a method check."""
+    from .ps_score import (
+        QUADRANT_COLORS,
+        QUADRANT_ESCAPER,
+        QUADRANT_KD,
+        compare_with_perturbation_strength,
+    )
+
+    if results is None or results.summary.empty:
+        return
+    summary = results.summary
+
+    # --- 1. knockdown efficiency per target ------------------------------
+    fig, ax = plt.subplots(figsize=(max(6, 0.20 * len(summary)), 4.0))
+    bottom = np.zeros(len(summary))
+    for key, col in [
+        ("pct_successful_kd", QUADRANT_KD),
+        ("pct_escaper", QUADRANT_ESCAPER),
+        ("pct_non_responder", "non-responder"),
+        ("pct_low_signal", "low signal"),
+    ]:
+        ax.bar(range(len(summary)), summary[key], bottom=bottom,
+               color=QUADRANT_COLORS.get(col, "#a0aec0"), label=col)
+        bottom += summary[key].to_numpy()
+    ax.set_xticks(range(len(summary)))
+    ax.set_xticklabels(summary["target_gene"], rotation=90, fontsize=6)
+    ax.set_ylabel("% of perturbed cells")
+    ax.set_title("Per-cell perturbation outcome by target", fontsize=11)
+    ax.legend(fontsize=7, frameon=False, bbox_to_anchor=(1.01, 1), loc="upper left")
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "ps_outcome_by_target",
+        SECTION_PS,
+        "Per-cell perturbation outcome",
+        "Each perturbed cell is classified by its perturbation score and the "
+        "target's own expression. Green is a confirmed knockdown; red are "
+        "escapers, which carry the guide and show the signature yet still "
+        "express the gene.",
+    )
+
+    # --- 2. escaper fraction ---------------------------------------------
+    esc = summary.sort_values("pct_escaper", ascending=False)
+    fig, ax = plt.subplots(figsize=(max(6, 0.20 * len(esc)), 3.6))
+    ax.bar(range(len(esc)), esc["pct_escaper"], color="#c53030")
+    ax.set_xticks(range(len(esc)))
+    ax.set_xticklabels(esc["target_gene"], rotation=90, fontsize=6)
+    ax.set_ylabel("% escapers")
+    ax.set_title("Escaper fraction per target", fontsize=11)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "ps_escaper_fraction",
+        SECTION_PS,
+        "Escaper fraction per target",
+        "Cells carrying a guide whose target is nonetheless still expressed. A "
+        "high fraction means the population-level effect understates how well "
+        "the guide works in the cells where it does work.",
+    )
+
+    # --- 3. agreement with the group-level test --------------------------
+    merged = compare_with_perturbation_strength(
+        results, perturbation_results.table, perturbation_results.primary_control
+    )
+    lfc_col = f"log2fc_{perturbation_results.primary_control}"
+    if not merged.empty and lfc_col in merged.columns:
+        ok = merged[lfc_col].notna() & merged["pct_successful_kd"].notna()
+        if ok.sum() > 2:
+            x = merged.loc[ok, lfc_col].to_numpy(dtype=float)
+            y = merged.loc[ok, "pct_successful_kd"].to_numpy(dtype=float)
+            r = float(np.corrcoef(x, y)[0, 1])
+            fig, ax = plt.subplots(figsize=(5.4, 4.6))
+            hit = merged.loc[ok].get(f"is_hit_{perturbation_results.primary_control}")
+            colors = (
+                ["#c53030" if h else "#a0aec0" for h in hit]
+                if hit is not None
+                else "#2b6cb0"
+            )
+            ax.scatter(x, y, s=28, c=colors)
+            for xi, yi, name in zip(x, y, merged.loc[ok, "target_gene"]):
+                if yi > np.percentile(y, 85) or xi < np.percentile(x, 15):
+                    ax.annotate(name, (xi, yi), fontsize=6,
+                                xytext=(3, 3), textcoords="offset points")
+            ax.set_xlabel("log2FC of the target's own expression (group-level test)")
+            ax.set_ylabel("% cells with confirmed knockdown (per-cell score)")
+            ax.set_title(f"Per-cell score vs group-level knockdown (Pearson r = {r:.2f})", fontsize=10)
+            sns.despine(ax=ax)
+            fig.tight_layout()
+            reg.save(
+                fig,
+                "ps_vs_perturbation_strength",
+                SECTION_PS,
+                "Per-cell scores vs the group-level test",
+                "The two axes measure different things: the group-level test uses "
+                "the target's own expression, while the per-cell score projects "
+                "cells onto the perturbation's whole downstream signature. A gene "
+                "can be strongly knocked down yet change little downstream, or the "
+                "reverse, so these need not track each other closely — the "
+                "correlation in the title is what these data actually show, not a "
+                "quantity expected to be large.",
+            )
+
+    _plot_ps_quadrants(expr, results, reg, cfg)
+
+
+def _plot_ps_quadrants(expr, results, reg: FigureRegistry, cfg: Config) -> None:
+    """Score-vs-expression quadrant scatter, one per scored target."""
+    from scipy import sparse
+
+    from .ps_score import (
+        QUADRANT_COLORS,
+        QUADRANT_ESCAPER,
+        QUADRANT_KD,
+        QUADRANT_LOW,
+        QUADRANT_NONRESPONDER,
+    )
+
+    layer = expr.layers[LOGNORM_LAYER] if LOGNORM_LAYER in expr.layers else expr.X
+    targets = expr.obs[OBS_TARGET].astype(str)
+    klass = expr.obs[OBS_CLASS].astype(str)
+    top_n = cfg.ps_score.top_n_report
+    rng = np.random.default_rng(cfg.run.seed)
+
+    for rank, gene in enumerate(results.summary["target_gene"]):
+        series = results.scores.get(gene)
+        if series is None or gene not in expr.var_names:
+            continue
+        col = layer[:, expr.var_names.get_loc(gene)]
+        if sparse.issparse(col):
+            col = col.toarray()
+        expression = pd.Series(np.asarray(col).ravel(), index=expr.obs_names)
+
+        cells = series.index.intersection(expr.obs_names)
+        ps = series.loc[cells]
+        ex = expression.loc[cells]
+        is_target = (targets.loc[cells] == gene) & (klass.loc[cells] == CLASS_TARGETING)
+        cut = results.expression_cut.get(gene, float(np.median(ex)))
+        thr = results.ps_threshold
+
+        fig, ax = plt.subplots(figsize=(6.4, 5.0))
+
+        ctrl_idx = cells[~is_target.to_numpy()]
+        if len(ctrl_idx) > 2000:
+            ctrl_idx = rng.choice(ctrl_idx, size=2000, replace=False)
+        ax.scatter(ps.loc[ctrl_idx], ex.loc[ctrl_idx], s=14, c="#cbd5e0", alpha=0.45,
+                   linewidths=0, label="control cells", rasterized=True)
+
+        tgt = cells[is_target.to_numpy()]
+        quad = results.quadrants.get(gene)
+        colors = (
+            [QUADRANT_COLORS.get(str(quad.get(c, QUADRANT_LOW)), "#a0aec0") for c in tgt]
+            if quad is not None
+            else "#e53e3e"
+        )
+        ax.scatter(ps.loc[tgt], ex.loc[tgt], s=26, c=colors, alpha=0.85,
+                   edgecolors="white", linewidths=0.4, label=f"{gene} cells",
+                   rasterized=True)
+
+        ax.axvline(thr, color="black", ls="--", lw=1, alpha=0.6)
+        ax.axhline(cut, color="black", ls="--", lw=1, alpha=0.6)
+
+        row = results.summary[results.summary["target_gene"] == gene].iloc[0]
+        xmax = float(max(ps.max(), thr * 2))
+        ymax = float(max(ex.max(), cut * 2)) or 1.0
+        ax.text(thr + (xmax - thr) * 0.5, ymax * 0.95,
+                f"ESCAPERS\n{row['pct_escaper']:.0f}%", fontsize=8, ha="center",
+                color=QUADRANT_COLORS[QUADRANT_ESCAPER], fontweight="bold")
+        ax.text(thr + (xmax - thr) * 0.5, ymax * 0.05,
+                f"KNOCKED DOWN\n{row['pct_successful_kd']:.0f}%", fontsize=8, ha="center",
+                color=QUADRANT_COLORS[QUADRANT_KD], fontweight="bold")
+        ax.text(thr * 0.5, ymax * 0.95, f"NON-RESPONDER\n{row['pct_non_responder']:.0f}%",
+                fontsize=8, ha="center", color=QUADRANT_COLORS[QUADRANT_NONRESPONDER],
+                fontweight="bold")
+        ax.text(thr * 0.5, ymax * 0.05, f"LOW SIGNAL\n{row['pct_low_signal']:.0f}%",
+                fontsize=8, ha="center", color="#718096", fontweight="bold")
+
+        ax.set_xlabel("Perturbation score (per cell)")
+        ax.set_ylabel(f"{gene} expression (log-normalized)")
+        ax.set_title(f"{gene}: per-cell perturbation outcome "
+                     f"(n={int(row['n_perturbed_cells']):,})", fontsize=10)
+        ax.legend(fontsize=7, frameon=False, loc="upper right")
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            f"ps_quadrant_{gene}",
+            SECTION_PS_PER_TARGET,
+            f"{gene} perturbation score vs expression",
+            f"Cells carrying {gene} guides, split by perturbation score "
+            f"(vertical cut at {thr}) and by {gene} expression relative to the "
+            f"control median (horizontal cut). {row['pct_successful_kd']:.0f}% "
+            f"show a confirmed knockdown and {row['pct_escaper']:.0f}% escape it.",
+            in_report=rank < top_n,
+        )
+    logger.info(
+        "Wrote %d perturbation-score quadrant figures (%d shown in the report)",
+        len(results.summary),
+        min(top_n, len(results.summary)),
+    )

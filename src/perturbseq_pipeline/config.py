@@ -71,6 +71,19 @@ class InputConfig:
     #: h5ad mode only. Name of a layer that already holds log-normalized values.
     #: When set, the pipeline uses it instead of re-normalizing.
     normalized_layer: Optional[str] = None
+    #: Path to a barcode -> guide table (CSV/TSV), the layout used by
+    #: PS_python's demo: one row per detected guide per cell. When several rows
+    #: share a barcode the pipeline applies the same dominance rule as the
+    #: matrix path rather than taking whichever row came last.
+    guide_table: Optional[str] = None
+    #: Column names within that table.
+    guide_table_cell_column: str = "cell"
+    guide_table_gene_column: str = "gene"
+    guide_table_guide_column: Optional[str] = "sgrna"
+    guide_table_count_column: Optional[str] = "umi_count"
+    #: Library prefixes such as ``S1L1_`` are stripped from the barcode before
+    #: matching against the matrix.
+    guide_table_strip_prefix: bool = True
 
     def resolved_mtx_dirs(self) -> Dict[str, str]:
         """Return ``{lane_id: path}`` regardless of how the user spelled it."""
@@ -249,6 +262,38 @@ class EnrichmentConfig:
 
 
 @dataclass
+class PSScoreConfig:
+    """Per-cell perturbation-response scores, via the ``pertps`` package.
+
+    Delegates to the lab's PS_python implementation
+    (https://github.com/weili-lab/PS_python) of the scMAGeCK perturbation score:
+    for each target it learns the expression signature of the perturbation, then
+    projects every cell onto it. Combined with the target's own expression this
+    separates cells that were genuinely knocked down from escapers.
+
+    ``pertps`` is an optional dependency; install with ``pip install -e ".[ps]"``.
+    """
+
+    enabled: bool = True
+    #: Fail rather than skip when ``pertps`` is not installed. Left false so a
+    #: run without the optional extra still completes; the report states that
+    #: the section was skipped and why.
+    require: bool = False
+    #: Genes used to build the perturbation signature (``top_n`` upstream).
+    top_n_biomarkers: int = 100
+    #: Upper bound on the raw score before normalization (``scale_factor``).
+    scale_factor: float = 3.0
+    #: Scores at or above this count as "high"; the vertical cut of the quadrant
+    #: plot. 0.5 matches the PS_python demo.
+    ps_threshold: float = 0.5
+    min_cells_per_target: int = 10
+    min_control_cells: int = 10
+    #: Number of targets whose quadrant plots are embedded in the report; every
+    #: scored target still gets a figure on disk.
+    top_n_report: int = 12
+
+
+@dataclass
 class ReportConfig:
     """HTML report assembly."""
 
@@ -302,6 +347,7 @@ class Config:
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
     enrichment: EnrichmentConfig = field(default_factory=EnrichmentConfig)
+    ps_score: PSScoreConfig = field(default_factory=PSScoreConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 

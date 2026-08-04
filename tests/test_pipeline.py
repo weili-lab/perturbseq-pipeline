@@ -527,6 +527,191 @@ def test_omnibus_detects_association_and_null():
 
 
 # ---------------------------------------------------------------------------
+# Per-cell perturbation scores (pertps / PS_python)
+# ---------------------------------------------------------------------------
+
+pertps_required = pytest.mark.skipif(
+    not __import__("perturbseq_pipeline.ps_score", fromlist=["x"]).pertps_available(),
+    reason="optional pertps package not installed",
+)
+
+
+@pertps_required
+def test_ps_scores_are_produced(mtx_run):
+    summary = pd.read_csv(mtx_run.outdir / "tables" / "ps_score.csv")
+    assert len(summary) > 0
+    for col in (
+        "target_gene",
+        "n_perturbed_cells",
+        "mean_ps",
+        "pct_successful_kd",
+        "pct_escaper",
+    ):
+        assert col in summary.columns
+    # Quadrant fractions describe a partition, so they must sum to 100%.
+    total = (
+        summary["pct_successful_kd"]
+        + summary["pct_escaper"]
+        + summary["pct_non_responder"]
+        + summary["pct_low_signal"]
+    )
+    assert np.allclose(total, 100.0, atol=0.01), total.tolist()
+
+
+@pertps_required
+def test_ps_scores_land_in_obs(mtx_run):
+    obs = mtx_run.adata.obs
+    assert "ps_score" in obs.columns and "ps_quadrant" in obs.columns
+    scored = obs["ps_score"].notna()
+    assert scored.sum() > 0
+    vals = obs.loc[scored, "ps_score"].to_numpy(dtype=float)
+    assert vals.min() >= 0 and vals.max() <= 1, "scores must be in [0, 1]"
+
+
+@pertps_required
+def test_ps_figures_cover_every_scored_target(mtx_run):
+    summary = pd.read_csv(mtx_run.outdir / "tables" / "ps_score.csv")
+    figs = list((mtx_run.figures_dir / "ps_score" / "per_target").glob("*.png"))
+    assert len(figs) == len(summary)
+
+
+@pertps_required
+def test_ps_skips_targets_not_expressed_in_controls(synthetic, tmp_path):
+    """An unexpressed gene must not top the knockdown-efficiency ranking.
+
+    With zero expression the control median is 0, so every cell falls on the
+    "low expression" side of the quadrant split and any high score is misread
+    as a successful knockdown.
+    """
+    import scanpy as sc
+
+    from perturbseq_pipeline.cli import run_pipeline
+
+    combined = sc.read_10x_mtx(synthetic["lanes"]["L1"], gex_only=False, cache=False)
+    combined.var_names_make_unique()
+    silent = NULL_TARGETS[0]
+    col = combined.var_names.get_loc(silent)
+    X = combined.X.tolil()
+    X[:, col] = 0
+    combined.X = X.tocsr()
+    path = tmp_path / "silent_ps.h5ad"
+    combined.write_h5ad(path)
+
+    cfg = _base_config(synthetic, tmp_path / "run_ps_silent")
+    cfg.input.mtx_dirs = None
+    cfg.input.h5ad = str(path)
+    cfg.metadata.file = None
+    cfg.qc.min_cells_per_gene = 0
+    result = run_pipeline(cfg)
+
+    summary_path = result.outdir / "tables" / "ps_score.csv"
+    if summary_path.is_file():
+        summary = pd.read_csv(summary_path)
+        assert silent not in set(summary["target_gene"])
+
+
+def test_pipeline_completes_without_pertps(synthetic, tmp_path, monkeypatch):
+    """A missing optional dependency must skip the stage, not break the run."""
+    from perturbseq_pipeline import ps_score as ps_mod
+    from perturbseq_pipeline.cli import run_pipeline
+
+    monkeypatch.setattr(ps_mod, "pertps_available", lambda: False)
+    cfg = _base_config(synthetic, tmp_path / "run_no_pertps")
+    result = run_pipeline(cfg)
+    assert result.report.is_file(), "run must still finish"
+    # And the report must say the section was skipped rather than omit it silently.
+    html = result.report.read_text()
+    assert "This section was skipped" in html
+    assert "pertps" in html
+
+
+def test_missing_pertps_can_be_made_fatal(synthetic, tmp_path, monkeypatch):
+    from perturbseq_pipeline import ps_score as ps_mod
+    from perturbseq_pipeline.cli import run_pipeline
+
+    monkeypatch.setattr(ps_mod, "pertps_available", lambda: False)
+    cfg = _base_config(synthetic, tmp_path / "run_require_pertps")
+    cfg.ps_score.require = True
+    with pytest.raises(ps_mod.PertpsUnavailable):
+        run_pipeline(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Barcode -> guide table input (the PS_python demo layout)
+# ---------------------------------------------------------------------------
+
+
+def test_guide_table_input_resolves_multiplets_by_count(synthetic, tmp_path):
+    """A cell listed twice must follow the dominance rule, not row order."""
+    import scanpy as sc
+
+    from perturbseq_pipeline.cli import run_pipeline
+
+    adata = sc.read_10x_mtx(synthetic["lanes"]["L1"], gex_only=True, cache=False)
+    adata.var_names_make_unique()
+    path = tmp_path / "expr_only.h5ad"
+    adata.write_h5ad(path)
+
+    # Every cell gets a dominant guide, plus a decoy row listed afterwards with
+    # a much lower count. Taking "the last row wins" would pick the decoy.
+    barcodes = list(adata.obs_names)
+    rows = []
+    for i, bc in enumerate(barcodes):
+        winner = "Non-Targeting" if i % 4 == 0 else KD_TARGETS[i % len(KD_TARGETS)]
+        rows.append({"cell": bc, "gene": winner, "umi_count": 50})
+        rows.append({"cell": bc, "gene": "DECOY", "umi_count": 1})
+    table = tmp_path / "barcodes.txt"
+    pd.DataFrame(rows).to_csv(table, sep="\t", index=False)
+
+    cfg = _base_config(synthetic, tmp_path / "run_guide_table")
+    cfg.input.mtx_dirs = None
+    cfg.input.h5ad = str(path)
+    cfg.input.guide_table = str(table)
+    # The synthetic barcodes contain underscores themselves, so the library
+    # prefix heuristic would mangle them; it is covered by its own test.
+    cfg.input.guide_table_strip_prefix = False
+    cfg.metadata.file = None
+    result = run_pipeline(cfg)
+
+    targets = set(result.adata.obs["target_gene"].astype(str))
+    assert "DECOY" not in targets, "the low-count decoy must never win"
+    assert set(KD_TARGETS) <= targets
+    # 'Non-Targeting' must be recognised as the control population.
+    assert (result.adata.obs["perturbation_class"] == "non-targeting").sum() > 0
+
+
+def test_guide_table_strips_library_prefixes(tmp_path):
+    from perturbseq_pipeline.config import Config
+    from perturbseq_pipeline.io import read_guide_table
+
+    table = tmp_path / "bc.tsv"
+    pd.DataFrame(
+        {
+            "cell": ["S1L1_AAAC-1", "S2L2_CCCC-1"],
+            "gene": ["GENEA", "Non-Targeting"],
+            "umi_count": [30, 30],
+        }
+    ).to_csv(table, sep="\t", index=False)
+
+    cfg = Config.from_dict({"input": {"h5ad": "x", "guide_table": str(table)}})
+    labels = read_guide_table(cfg, pd.Index(["AAAC-1", "CCCC-1", "TTTT-1"]))
+    assert list(labels) == ["GENEA", "Non-Targeting", "unassigned"]
+
+
+def test_guide_table_unmatched_barcodes_raise_a_clear_error(tmp_path):
+    from perturbseq_pipeline.config import Config
+    from perturbseq_pipeline.io import read_guide_table
+
+    table = tmp_path / "bc.tsv"
+    pd.DataFrame(
+        {"cell": ["WRONG-1"], "gene": ["GENEA"], "umi_count": [30]}
+    ).to_csv(table, sep="\t", index=False)
+    cfg = Config.from_dict({"input": {"h5ad": "x", "guide_table": str(table)}})
+    with pytest.raises(ValueError, match="No barcode"):
+        read_guide_table(cfg, pd.Index(["AAAC-1"]))
+
+
+# ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
 
