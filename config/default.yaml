@@ -73,6 +73,23 @@ perturbation:
   max_log2fc_for_hit: 0.0
   top_n_report: 12
   umap_background_fraction: 0.1
+enrichment:
+  enabled: true
+  cluster_key: leiden
+  controls:
+  - ntc
+  - other
+  primary_control: other
+  fdr_alpha: 0.05
+  min_cells_per_target: 10
+  min_cells_per_cluster: 20
+  min_reference_cells: 10
+  odds_pseudocount: 0.5
+  stratify_by: null
+  guide_concordance: true
+  min_cells_per_guide: 5
+  permutations: 1000
+  top_n_report: 12
 report:
   title: Perturb-seq analysis report
   embed_figures: true

@@ -101,6 +101,7 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     import scanpy as sc
 
     from . import cluster as cluster_mod
+    from . import enrichment as enrich_mod
     from . import guides as guides_mod
     from . import io as io_mod
     from . import perturbation as pert_mod
@@ -116,13 +117,13 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     warnings: List[str] = []
 
     # --- 1. load ----------------------------------------------------------
-    logger.info("=== Stage 1/7: loading input ===")
+    logger.info("=== Stage 1/8: loading input ===")
     data = io_mod.load_data(cfg)
     expr, guides = data.expr, data.guides
     n_cells_input = expr.n_obs
 
     # --- 2. QC ------------------------------------------------------------
-    logger.info("=== Stage 2/7: quality control ===")
+    logger.info("=== Stage 2/8: quality control ===")
     expr = qc_mod.prefilter(expr, cfg)
     expr = qc_mod.compute_qc_metrics(expr, cfg)
     plots_mod.plot_qc(expr, registry, stage="before filtering")
@@ -132,7 +133,7 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     tables["qc_summary"] = qc_mod.qc_summary_table(expr)
 
     # --- 3. guide assignment ---------------------------------------------
-    logger.info("=== Stage 3/7: guide assignment ===")
+    logger.info("=== Stage 3/8: guide assignment ===")
     expr = guides_mod.assign_guides(expr, guides, cfg)
     tables["guide_qc"] = qc_mod.guide_qc_summary(expr, cfg)
     tables["guide_assignment"] = guides_mod.assignment_summary(expr, cfg)
@@ -145,14 +146,14 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     plots_mod.plot_guide_qc(expr, guides, registry, cfg)
 
     # --- 4. clustering ----------------------------------------------------
-    logger.info("=== Stage 4/7: normalization, embedding, clustering ===")
+    logger.info("=== Stage 4/8: normalization, embedding, clustering ===")
     expr = cluster_mod.normalize(expr, cfg)
     expr = cluster_mod.embed_and_cluster(expr, cfg)
     tables["clusters"] = cluster_mod.cluster_summary(expr)
     plots_mod.plot_clustering(expr, registry, cfg)
 
     # --- 5. perturbation strength ----------------------------------------
-    logger.info("=== Stage 5/7: perturbation strength ===")
+    logger.info("=== Stage 5/8: perturbation strength ===")
     results = pert_mod.test_all_targets(expr, cfg)
     tables["perturbation"] = pert_mod.format_results_table(results, cfg)
     tables["perturbation_full"] = results.table
@@ -160,8 +161,24 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     plots_mod.plot_perturbation_overview(results, registry, cfg)
     plots_mod.plot_per_target(expr, results, registry, cfg)
 
-    # --- 6. write deliverables -------------------------------------------
-    logger.info("=== Stage 6/7: writing outputs ===")
+    # --- 6. cluster enrichment -------------------------------------------
+    enrichment = None
+    if cfg.enrichment.enabled:
+        logger.info("=== Stage 6/8: perturbation enrichment across clusters ===")
+        enrichment = enrich_mod.test_cluster_enrichment(expr, cfg)
+        tables["enrichment"] = enrich_mod.format_enrichment_table(enrichment)
+        tables["enrichment_full"] = enrichment.table
+        tables["enrichment_composition"] = enrichment.composition.reset_index(
+            names="target_gene"
+        )
+        tables["enrichment_effect_magnitude"] = enrichment.effect_magnitude
+        plots_mod.plot_enrichment(expr, enrichment, registry, cfg)
+        plots_mod.plot_enrichment_per_target(expr, enrichment, registry, cfg)
+    else:
+        logger.info("Cluster enrichment disabled (enrichment.enabled: false)")
+
+    # --- 7. write deliverables -------------------------------------------
+    logger.info("=== Stage 7/8: writing outputs ===")
     tabledir = outdir / "tables"
     tabledir.mkdir(parents=True, exist_ok=True)
     table_paths: Dict[str, Path] = {}
@@ -183,8 +200,8 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
         guide_h5ad_path = io_mod.write_h5ad(guides[expr.obs_names].copy(), outdir / gname)
         guide_h5ad_path = io_mod.relocate_if_large(guide_h5ad_path, cfg)
 
-    # --- 7. report --------------------------------------------------------
-    logger.info("=== Stage 7/7: building report ===")
+    # --- 8. report --------------------------------------------------------
+    logger.info("=== Stage 8/8: building report ===")
     n_hits = len(results.hits) if not results.table.empty else 0
     outputs = {
         "Processed h5ad": str(h5ad_path),
@@ -204,6 +221,7 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
         cfg=cfg,
         registry=registry,
         perturbation=results,
+        enrichment=enrichment,
         tables=tables,
         warnings=warnings,
         summary_cards=[

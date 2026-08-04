@@ -55,6 +55,24 @@ perturbation:
   fdr_alpha: 0.05
   top_n_report: 12            # remaining targets still get figures on disk
 
+enrichment:
+  # Is each perturbation over-represented in particular clusters? Fisher's exact
+  # test per (target, cluster) pair, BH-FDR across all pairs.
+  enabled: true
+  cluster_key: leiden
+  controls: ["ntc", "other"]
+  # 'other' rather than 'ntc' here: the non-targeting group is small, and in a
+  # rare cluster it contributes only a handful of cells - no power exactly where
+  # the strongest effects are.
+  primary_control: other
+  fdr_alpha: 0.05
+  min_cells_per_target: 10
+  min_cells_per_cluster: 20
+  guide_concordance: true       # do several guides for a target agree?
+  stratify_by: null             # set to lane_id for a multi-lane run (CMH test)
+  permutations: 1000
+  top_n_report: 12
+
 report:
   title: "Perturb-seq demo report — ESC TF screen (S1 lane 1)"
   embed_figures: true

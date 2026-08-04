@@ -380,6 +380,153 @@ def test_h5ad_without_any_guide_information_gives_a_clear_error(synthetic, tmp_p
 
 
 # ---------------------------------------------------------------------------
+# Cluster enrichment
+# ---------------------------------------------------------------------------
+
+
+def test_enrichment_outputs_are_produced(mtx_run):
+    per_target = list((mtx_run.figures_dir / "enrichment" / "per_target").glob("*.png"))
+    overview = list((mtx_run.figures_dir / "enrichment").glob("*.png"))
+    assert per_target, "expected one enrichment figure per target"
+    assert {p.stem for p in overview} >= {
+        "enrichment_heatmap",
+        "enrichment_volcano",
+        "enrichment_composition",
+        "enrichment_effect_magnitude",
+    }
+    tbl = pd.read_csv(mtx_run.outdir / "tables" / "enrichment_full.csv")
+    for col in (
+        "target_gene",
+        "cluster",
+        "control",
+        "odds_ratio",
+        "log2_odds_ratio",
+        "pval",
+        "fdr",
+        "significant",
+        "low_power",
+        "direction",
+    ):
+        assert col in tbl.columns, f"missing column {col}"
+
+
+def test_enrichment_reports_both_control_arms(mtx_run):
+    tbl = pd.read_csv(mtx_run.outdir / "tables" / "enrichment_full.csv")
+    assert set(tbl["control"]) == {"ntc", "other"}
+    # Hit calling is confined to the primary arm, so FDR families stay separate.
+    assert set(tbl.loc[tbl["significant"], "control"]) <= {"other"}
+
+
+def test_enrichment_recovers_a_planted_cluster_association(synthetic, tmp_path):
+    """A perturbation that drives cells into their own cluster must be found.
+
+    The synthetic knockdown targets shift expression enough that clustering
+    separates them, so each KD target should be significantly enriched in at
+    least one cluster.
+    """
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_enrich")
+    result = run_pipeline(cfg)
+    tbl = pd.read_csv(result.outdir / "tables" / "enrichment_full.csv")
+    sig = tbl[tbl["significant"]]
+    for gene in KD_TARGETS:
+        assert gene in set(sig["target_gene"]), f"{gene} should be enriched somewhere"
+
+
+def test_enrichment_odds_ratios_are_finite(mtx_run):
+    """The Haldane-Anscombe correction must keep zero-count cells finite."""
+    tbl = pd.read_csv(mtx_run.outdir / "tables" / "enrichment_full.csv")
+    assert np.isfinite(tbl["odds_ratio"]).all(), "odds ratios must never be inf/NaN"
+    assert np.isfinite(tbl["log2_odds_ratio"]).all()
+    assert (tbl["odds_ratio"] > 0).all()
+
+
+def test_enrichment_can_be_disabled(synthetic, tmp_path):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_noenrich")
+    cfg.enrichment.enabled = False
+    result = run_pipeline(cfg)
+    assert not (result.outdir / "figures" / "enrichment").exists()
+    assert not (result.outdir / "tables" / "enrichment_full.csv").exists()
+    assert result.report.is_file()
+
+
+def test_enrichment_stratified_runs_across_lanes(synthetic, tmp_path):
+    """Cochran-Mantel-Haenszel path must work on a genuinely multi-lane run."""
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_cmh")
+    cfg.enrichment.stratify_by = "lane_id"
+    result = run_pipeline(cfg)
+    tbl = pd.read_csv(result.outdir / "tables" / "enrichment_full.csv")
+    assert len(tbl) > 0
+    assert np.isfinite(tbl["odds_ratio"]).all()
+
+
+def test_fisher_direction_matches_the_counts():
+    """Direction must follow the observed percentages, not the p-value."""
+    from perturbseq_pipeline.enrichment import _odds_ratio
+
+    # Target over-represented: 50/100 vs 10/100 -> odds ratio well above 1.
+    assert _odds_ratio(50, 50, 10, 90, 0.5) > 1
+    # Target under-represented -> below 1.
+    assert _odds_ratio(5, 95, 40, 60, 0.5) < 1
+    # Zero counts stay finite thanks to the pseudocount.
+    assert np.isfinite(_odds_ratio(0, 100, 0, 100, 0.5))
+
+
+def test_guide_concordance_follows_the_observed_direction():
+    """A depletion supported by every guide must count as full agreement.
+
+    Judging agreement only in the enrichment direction would report real
+    depletions as 0 guides agreeing — the opposite of the truth.
+    """
+    from perturbseq_pipeline.enrichment import _guide_concordance
+    from perturbseq_pipeline.guides import (
+        CLASS_TARGETING,
+        OBS_CLASS,
+        OBS_GUIDE,
+        OBS_TARGET,
+    )
+
+    # Three guides for GENE, none of whose cells land in cluster "9",
+    # against a reference that puts 20% of its cells there.
+    obs = pd.DataFrame(
+        {
+            OBS_GUIDE: ["g1"] * 10 + ["g2"] * 10 + ["g3"] * 10,
+            OBS_TARGET: ["GENE"] * 30,
+            OBS_CLASS: [CLASS_TARGETING] * 30,
+            "leiden": ["1"] * 30,
+        }
+    )
+    conc, tested = _guide_concordance(
+        obs, "GENE", "9", "leiden", ref_fraction=0.20, min_cells=5, direction="depleted"
+    )
+    assert (conc, tested) == (3, 3), "all three guides support the depletion"
+
+    conc, tested = _guide_concordance(
+        obs, "GENE", "9", "leiden", ref_fraction=0.20, min_cells=5, direction="enriched"
+    )
+    assert (conc, tested) == (0, 3), "none support an enrichment"
+
+
+def test_omnibus_detects_association_and_null():
+    from perturbseq_pipeline.enrichment import omnibus_test
+
+    # Strong association: each target lives in its own cluster.
+    assoc = pd.DataFrame([[100, 1], [1, 100]], index=["A", "B"], columns=["c1", "c2"])
+    res = omnibus_test(assoc, n_permutations=200, seed=0)
+    assert res["p_permutation"] < 0.05
+
+    # No association: identical profiles.
+    null = pd.DataFrame([[50, 50], [50, 50]], index=["A", "B"], columns=["c1", "c2"])
+    res_null = omnibus_test(null, n_permutations=200, seed=0)
+    assert res_null["p_permutation"] > 0.05
+
+
+# ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
 

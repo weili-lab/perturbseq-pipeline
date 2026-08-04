@@ -52,6 +52,8 @@ SECTION_GUIDES = "guides"
 SECTION_CLUSTERING = "clustering"
 SECTION_PERTURBATION = "perturbation"
 SECTION_PER_GENE = "perturbation/per_gene"
+SECTION_ENRICHMENT = "enrichment"
+SECTION_ENRICH_PER_TARGET = "enrichment/per_target"
 
 _CLASS_COLORS = {
     CLASS_TARGETING: "#2b6cb0",
@@ -852,3 +854,302 @@ def plot_per_target(
         len(results.table),
         min(top_n, len(results.table)),
     )
+
+
+# ---------------------------------------------------------------------------
+# Cluster-enrichment figures
+# ---------------------------------------------------------------------------
+
+
+def _order_by_similarity(matrix: pd.DataFrame) -> List[str]:
+    """Hierarchically order rows so similar profiles sit together."""
+    if matrix.shape[0] < 3:
+        return list(matrix.index)
+    try:
+        from scipy.cluster.hierarchy import leaves_list, linkage
+        from scipy.spatial.distance import pdist
+
+        values = np.nan_to_num(matrix.to_numpy(dtype=float))
+        dist = pdist(values, metric="correlation")
+        if not np.all(np.isfinite(dist)):
+            return list(matrix.index)
+        return [matrix.index[i] for i in leaves_list(linkage(dist, method="average"))]
+    except Exception:  # pragma: no cover - ordering is cosmetic
+        return list(matrix.index)
+
+
+def plot_enrichment(expr, results, reg: FigureRegistry, cfg: Config) -> None:
+    """Heatmap, phenocopy map, composition bars, volcano and ranking."""
+    from .enrichment import enrichment_matrix, phenocopy_similarity, significance_matrix
+
+    if results.table.empty:
+        return
+    ecfg = cfg.enrichment
+    lor = enrichment_matrix(results)
+    fdr = significance_matrix(results)
+    if lor.empty:
+        return
+    order = _order_by_similarity(lor)
+    lor = lor.loc[order]
+    fdr = fdr.loc[order]
+
+    # --- 1. main heatmap -------------------------------------------------
+    lim = float(np.nanpercentile(np.abs(lor.to_numpy()), 98)) or 1.0
+    height = max(4.0, 0.20 * len(lor) + 1.5)
+    fig, ax = plt.subplots(figsize=(max(6.0, 0.55 * lor.shape[1] + 4), height))
+    im = ax.imshow(lor.to_numpy(), cmap="RdBu_r", vmin=-lim, vmax=lim, aspect="auto")
+    ax.set_xticks(range(lor.shape[1]))
+    ax.set_xticklabels(lor.columns, fontsize=8)
+    ax.set_yticks(range(lor.shape[0]))
+    ax.set_yticklabels(lor.index, fontsize=6)
+    ax.set_xlabel(f"Cluster ({results.cluster_key})")
+    n_marked = 0
+    for i in range(lor.shape[0]):
+        for j in range(lor.shape[1]):
+            if fdr.iat[i, j] is not None and fdr.iat[i, j] < ecfg.fdr_alpha:
+                ax.text(j, i, "*", ha="center", va="center", fontsize=9, color="black")
+                n_marked += 1
+    plt.colorbar(im, ax=ax, shrink=0.6, label="log2 odds ratio")
+    ax.set_title(
+        f"Perturbation enrichment across clusters\n"
+        f"* FDR < {ecfg.fdr_alpha} vs {CONTROL_LABELS[results.primary_control]}",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "enrichment_heatmap",
+        SECTION_ENRICHMENT,
+        "Perturbation enrichment across clusters",
+        "Red means cells carrying that perturbation are over-represented in the "
+        "cluster, blue under-represented; asterisks mark significant pairs. Rows "
+        "are ordered by profile similarity, so perturbations with the same "
+        f"phenotype sit together ({n_marked} significant pair(s)).",
+    )
+
+    # --- 2. phenocopy similarity ----------------------------------------
+    sim = phenocopy_similarity(results)
+    if not sim.empty and sim.shape[0] >= 3:
+        sim_order = _order_by_similarity(sim)
+        sim = sim.loc[sim_order, sim_order]
+        size = max(5.0, 0.16 * len(sim) + 2)
+        fig, ax = plt.subplots(figsize=(size, size))
+        im = ax.imshow(sim.to_numpy(), cmap="RdBu_r", vmin=-1, vmax=1)
+        ax.set_xticks(range(len(sim)))
+        ax.set_xticklabels(sim.index, rotation=90, fontsize=5)
+        ax.set_yticks(range(len(sim)))
+        ax.set_yticklabels(sim.index, fontsize=5)
+        plt.colorbar(im, ax=ax, shrink=0.6, label="Pearson r")
+        ax.set_title("Do perturbations phenocopy each other?", fontsize=11)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            "enrichment_phenocopy",
+            SECTION_ENRICHMENT,
+            "Perturbation similarity (phenocopy map)",
+            "Correlation between targets of their cluster-composition profiles. "
+            "Red blocks are groups of perturbations producing the same cell-state "
+            "shift — subunits of one complex are expected to land together, which "
+            "is a check that needs no prior knowledge of the complexes.",
+        )
+
+    # --- 3. composition stacked bars ------------------------------------
+    comp = results.composition
+    mag = results.effect_magnitude
+    top = list(mag["target_gene"].head(30))
+    ref = results.reference_composition[results.primary_control]
+    plot_df = pd.concat([ref.to_frame("REFERENCE").T, comp.loc[top]])
+    fig, ax = plt.subplots(figsize=(max(6, 0.32 * len(plot_df) + 2), 4.4))
+    bottom = np.zeros(len(plot_df))
+    palette = sns.color_palette("tab20", plot_df.shape[1])
+    for i, cl in enumerate(plot_df.columns):
+        ax.bar(range(len(plot_df)), plot_df[cl], bottom=bottom, color=palette[i], label=str(cl))
+        bottom += plot_df[cl].to_numpy()
+    ax.set_xticks(range(len(plot_df)))
+    ax.set_xticklabels(plot_df.index, rotation=90, fontsize=6)
+    ax.set_ylabel("% of cells")
+    ax.set_xlim(-0.6, len(plot_df) - 0.4)
+    ax.axvline(0.5, color="black", lw=1.2)
+    ax.legend(title="cluster", fontsize=6, title_fontsize=7, frameon=False,
+              bbox_to_anchor=(1.01, 1), loc="upper left", ncol=1)
+    ax.set_title("Cluster composition per perturbation (top 30 by shift)", fontsize=10)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "enrichment_composition",
+        SECTION_ENRICHMENT,
+        "Cluster composition per perturbation",
+        "Each bar is one perturbation's distribution across clusters; the leftmost "
+        "bar (left of the black line) is the reference. Perturbations are sorted "
+        "by how far their composition sits from it.",
+    )
+
+    # --- 4. volcano ------------------------------------------------------
+    sub = results.table[results.table["control"] == results.primary_control]
+    x = sub["log2_odds_ratio"].to_numpy(dtype=float)
+    with np.errstate(divide="ignore"):
+        y = -np.log10(np.clip(sub["fdr"].to_numpy(dtype=float), 1e-300, 1))
+    sig = sub["significant"].to_numpy(dtype=bool)
+    fig, ax = plt.subplots(figsize=(6.2, 4.8))
+    ax.scatter(x[~sig], y[~sig], s=12, color="#a0aec0", label="not significant")
+    ax.scatter(x[sig], y[sig], s=20, color="#c53030", label=f"FDR < {ecfg.fdr_alpha}")
+    ax.axhline(-np.log10(ecfg.fdr_alpha), color="#718096", ls="--", lw=1)
+    ax.axvline(0, color="#718096", ls="--", lw=1)
+    labelled = sub[sig].reindex(
+        sub[sig]["log2_odds_ratio"].abs().sort_values(ascending=False).index
+    ).head(10)
+    for _, row in labelled.iterrows():
+        ax.annotate(
+            f"{row['target_gene']}:{row['cluster']}",
+            (row["log2_odds_ratio"], -np.log10(max(row["fdr"], 1e-300))),
+            fontsize=6, xytext=(3, 3), textcoords="offset points",
+        )
+    ax.set_xlabel("log2 odds ratio (enriched >0, depleted <0)")
+    ax.set_ylabel("-log10 FDR")
+    ax.set_title("Enrichment across all target x cluster pairs", fontsize=10)
+    ax.legend(fontsize=8, frameon=False)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "enrichment_volcano",
+        SECTION_ENRICHMENT,
+        "Enrichment volcano",
+        "Every target/cluster pair. Points to the right are perturbations that "
+        "accumulate in a cluster; to the left, ones depleted from it.",
+    )
+
+    # --- 5. effect magnitude ranking -------------------------------------
+    fig, ax = plt.subplots(figsize=(max(6, 0.16 * len(mag)), 3.8))
+    colors = ["#c53030" if n > 0 else "#a0aec0" for n in mag["n_significant_clusters"]]
+    ax.bar(range(len(mag)), mag["composition_shift_pct"], color=colors)
+    ax.set_xticks(range(len(mag)))
+    ax.set_xticklabels(mag["target_gene"], rotation=90, fontsize=6)
+    ax.set_ylabel("Composition shift (%)")
+    ax.set_title(
+        "How far each perturbation moves cells between clusters "
+        "(red = has a significant cluster)",
+        fontsize=10,
+    )
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "enrichment_effect_magnitude",
+        SECTION_ENRICHMENT,
+        "Composition shift per perturbation",
+        "Total variation distance between each perturbation's cluster composition "
+        "and the reference: 0% means indistinguishable, 100% means the cells sit "
+        "in entirely different clusters.",
+    )
+
+
+def plot_enrichment_per_target(expr, results, reg: FigureRegistry, cfg: Config) -> None:
+    """One composition + UMAP figure per target; top-N marked for the report."""
+    from .enrichment import OBS_TARGET as _T  # noqa: F401  (kept explicit below)
+
+    if results.table.empty:
+        return
+    obs = expr.obs
+    cluster_key = results.cluster_key
+    targets_col = obs[OBS_TARGET].astype(str).to_numpy()
+    klass = obs[OBS_CLASS].astype(str).to_numpy()
+    clusters_col = obs[cluster_key].astype(str).to_numpy()
+    coords = np.asarray(expr.obsm["X_umap"]) if "X_umap" in expr.obsm else None
+    ref = results.reference_composition[results.primary_control]
+    clusters = list(results.composition.columns)
+
+    # Report the strongest hits first; every target still gets a file.
+    ranked = list(results.effect_magnitude["target_gene"])
+    hit_targets = results.targets_with_hits()
+    ordered = [t for t in ranked if t in hit_targets] + [
+        t for t in ranked if t not in hit_targets
+    ]
+    top_n = cfg.enrichment.top_n_report
+
+    sub_tbl = results.table[results.table["control"] == results.primary_control]
+    for rank, gene in enumerate(ordered):
+        if gene not in results.composition.index:
+            continue
+        comp = results.composition.loc[gene]
+        rows = sub_tbl[sub_tbl["target_gene"] == gene].set_index("cluster")
+
+        n_panels = 2 if coords is None else 3
+        fig, axes = plt.subplots(1, n_panels, figsize=(4.7 * n_panels, 4.0))
+
+        ax = axes[0]
+        idx = np.arange(len(clusters))
+        ax.bar(idx - 0.2, ref[clusters], width=0.4, color="#a0aec0", label="reference")
+        ax.bar(idx + 0.2, comp[clusters], width=0.4, color="#2b6cb0", label=gene)
+        for i, cl in enumerate(clusters):
+            if cl in rows.index and bool(rows.at[cl, "significant"]):
+                ax.text(i, max(comp[cl], ref[cl]) + 1, "*", ha="center", fontsize=11)
+        ax.set_xticks(idx)
+        ax.set_xticklabels(clusters, fontsize=7)
+        ax.set_xlabel(f"Cluster ({cluster_key})")
+        ax.set_ylabel("% of cells")
+        ax.legend(fontsize=7, frameon=False)
+        ax.set_title(f"{gene} cluster composition", fontsize=10)
+        sns.despine(ax=ax)
+
+        ax = axes[1]
+        lor = rows["log2_odds_ratio"].reindex(clusters)
+        sig = rows["significant"].reindex(clusters).fillna(False).to_numpy(dtype=bool)
+        ax.bar(idx, lor.to_numpy(dtype=float),
+               color=["#c53030" if s else "#a0aec0" for s in sig])
+        ax.axhline(0, color="black", lw=0.8)
+        ax.set_xticks(idx)
+        ax.set_xticklabels(clusters, fontsize=7)
+        ax.set_xlabel(f"Cluster ({cluster_key})")
+        ax.set_ylabel("log2 odds ratio")
+        ax.set_title(f"{gene} enrichment (red = FDR < {cfg.enrichment.fdr_alpha})", fontsize=10)
+        sns.despine(ax=ax)
+
+        if coords is not None:
+            ax = axes[2]
+            pert = (targets_col == gene) & (klass == CLASS_TARGETING)
+            ax.scatter(coords[~pert, 0], coords[~pert, 1], s=2, color="#e2e8f0",
+                       linewidths=0, rasterized=True)
+            cl_of = clusters_col[pert]
+            palette = sns.color_palette("tab20", len(clusters))
+            cmap = {c: palette[i] for i, c in enumerate(clusters)}
+            ax.scatter(coords[pert, 0], coords[pert, 1], s=10,
+                       c=[cmap.get(c, (0.3, 0.3, 0.3)) for c in cl_of],
+                       linewidths=0.2, edgecolors="#2d3748", rasterized=True)
+            ax.set_title(f"{gene} cells by cluster (n={int(pert.sum()):,})", fontsize=10)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            sns.despine(ax=ax, left=True, bottom=True)
+
+        best = rows["log2_odds_ratio"].abs().idxmax() if len(rows) else None
+        caption = f"Cluster distribution of cells perturbed for {gene}."
+        if best is not None and cl_has_hit(rows, best):
+            caption += (
+                f" Strongest association: cluster {best} "
+                f"({rows.at[best, 'pct_of_target']:.1f}% of {gene} cells vs "
+                f"{rows.at[best, 'pct_of_reference']:.1f}% of reference, "
+                f"FDR = {rows.at[best, 'fdr']:.2g})."
+            )
+        fig.tight_layout()
+        reg.save(
+            fig,
+            f"enrichment_{gene}",
+            SECTION_ENRICH_PER_TARGET,
+            f"{gene} cluster enrichment",
+            caption,
+            in_report=rank < top_n,
+        )
+    logger.info(
+        "Wrote %d per-target enrichment figures (%d shown in the report)",
+        len(ordered),
+        min(top_n, len(ordered)),
+    )
+
+
+def cl_has_hit(rows: pd.DataFrame, cluster) -> bool:
+    """True when this target/cluster pair reached significance."""
+    try:
+        return bool(rows.at[cluster, "significant"])
+    except (KeyError, ValueError):
+        return False

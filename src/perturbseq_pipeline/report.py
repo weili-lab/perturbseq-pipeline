@@ -24,6 +24,8 @@ from .config import Config
 from .perturbation import CONTROL_LABELS, PerturbationResults
 from .plots import (
     SECTION_CLUSTERING,
+    SECTION_ENRICH_PER_TARGET,
+    SECTION_ENRICHMENT,
     SECTION_GUIDES,
     SECTION_PER_GENE,
     SECTION_PERTURBATION,
@@ -44,6 +46,7 @@ class ReportInputs:
     cfg: Config
     registry: FigureRegistry
     perturbation: PerturbationResults
+    enrichment: object = None
     tables: Dict[str, pd.DataFrame] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
     summary_cards: List[tuple] = field(default_factory=list)
@@ -108,8 +111,11 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         "clustering": reg.by_section(SECTION_CLUSTERING),
         "perturbation": reg.by_section(SECTION_PERTURBATION),
         "per_gene": reg.by_section(SECTION_PER_GENE),
+        "enrichment": reg.by_section(SECTION_ENRICHMENT),
+        "enrichment_per_target": reg.by_section(SECTION_ENRICH_PER_TARGET),
     }
     extras = reg.extras(SECTION_PER_GENE)
+    enrich_extras = reg.extras(SECTION_ENRICH_PER_TARGET)
 
     tables_html = {
         key: _df_to_html(inputs.tables.get(key), cfg.report.max_table_rows)
@@ -121,6 +127,7 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "perturbation",
             "skipped",
             "manifest",
+            "enrichment",
         )
     }
     tables_html["outputs"] = _df_to_html(
@@ -131,6 +138,35 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
     # ``skipped`` drives a conditional heading, so it must be falsy when empty.
     if inputs.tables.get("skipped") is None or len(inputs.tables.get("skipped", [])) == 0:
         tables_html["skipped"] = ""
+
+    # --- enrichment context ------------------------------------------------
+    enr = inputs.enrichment
+    enrichment_ctx = None
+    if enr is not None and not enr.table.empty:
+        om = enr.omnibus or {}
+        enrichment_ctx = {
+            "n_hits": int(enr.table["significant"].sum()),
+            "n_targets_with_hits": len(enr.targets_with_hits()),
+            "n_targets": int(enr.composition.shape[0]),
+            "n_clusters": int(enr.composition.shape[1]),
+            "n_tests": int(enr.composition.shape[0] * enr.composition.shape[1]),
+            "control_label": CONTROL_LABELS[enr.primary_control],
+            "controls_described": " and ".join(
+                CONTROL_LABELS[c] for c in enr.controls_used
+            ),
+            "chi2": f"{om.get('chi2', float('nan')):.0f}",
+            "dof": om.get("dof", 0),
+            "p_perm": f"{om.get('p_permutation', float('nan')):.3g}",
+            "pct_small": f"{om.get('pct_expected_below_5', 0):.0f}",
+            "stratified": enr.stratified,
+            "stratify_by": enr.stratify_by,
+            "n_low_power": int(enr.table["low_power"].sum()),
+            "top_shift": (
+                enr.effect_magnitude.iloc[0].to_dict()
+                if len(enr.effect_magnitude)
+                else {}
+            ),
+        }
 
     controls_described = " and ".join(CONTROL_LABELS[c] for c in res.controls_used)
     primary_fallback = res.primary_control != cfg.perturbation.primary_control
@@ -169,6 +205,12 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         n_top_shown=len(figures["per_gene"]),
         extra_figures=extras,
         extra_figure_names=[f"{r.name}.{cfg.report.figure_format}" for r in extras],
+        enrichment=enrichment_ctx,
+        enrichment_extras=enrich_extras,
+        enrichment_extra_names=[
+            f"{r.name}.{cfg.report.figure_format}" for r in enrich_extras
+        ],
+        enrichment_per_gene_dir=str(reg.figdir / SECTION_ENRICH_PER_TARGET),
         per_gene_dir=str(reg.figdir / SECTION_PER_GENE),
         n_figures=len(reg.records),
         config_yaml=_config_yaml(cfg),

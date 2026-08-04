@@ -81,6 +81,7 @@
   <a href="#qc">1. Quality control</a>
   <a href="#clustering">2. Clustering</a>
   <a href="#perturbation">3. Perturbation strength</a>
+  {% if enrichment %}<a href="#enrichment">4. Cluster enrichment</a>{% endif %}
   <a href="#outputs">Outputs</a>
 </p>
 
@@ -203,6 +204,71 @@
     {% for name in extra_figure_names %}<div>{{ name }}</div>{% endfor %}
   </div>
 </div>
+{% endif %}
+
+<!-- ===================== 4. Enrichment ===================== -->
+{% if enrichment %}
+<h2 id="enrichment">4. Perturbation enrichment across clusters</h2>
+<p class="lede">
+  Section 3 asked whether each guide knocked its target down. This section asks
+  the follow-on question: did losing that gene push cells into a particular
+  transcriptional state? Every target is tested against every cluster with
+  Fisher's exact test{% if enrichment.stratified %}, stratified by
+  <code>{{ enrichment.stratify_by }}</code> (Cochran-Mantel-Haenszel) so that
+  differences in cluster composition between lanes cannot masquerade as a
+  perturbation effect{% endif %}, with BH-FDR across all
+  {{ enrichment.n_tests }} pairs.
+</p>
+
+<div class="note">
+  <b>Why an exact test.</b> {{ enrichment.pct_small }}% of the expected counts in
+  this table are below 5, because rare clusters hold few reference cells. That
+  makes chi-square residuals unreliable per cell, so it is used only as a global
+  screen and each pair is tested exactly.
+  <br><br>
+  <b>Reference.</b> Results are reported against {{ enrichment.controls_described }};
+  ranking and hit calling use <b>{{ enrichment.control_label }}</b>.
+  {{ enrichment.n_low_power }} pair(s) are flagged low-power, where the reference
+  contributes too few cells in that cluster to trust the odds ratio.
+</div>
+
+<h3>4.1 Is there any association at all?</h3>
+<p class="lede">
+  Omnibus test of the whole target-by-cluster table:
+  <b>chi-square = {{ enrichment.chi2 }}</b> on {{ enrichment.dof }} degrees of
+  freedom, permutation <b>p = {{ enrichment.p_perm }}</b>.
+</p>
+<div class="cards">
+  <div class="card"><div class="v">{{ enrichment.n_hits }}</div><div class="k">Significant pairs</div></div>
+  <div class="card"><div class="v">{{ enrichment.n_targets_with_hits }}</div><div class="k">Targets with a hit</div></div>
+  <div class="card"><div class="v">{{ enrichment.n_tests }}</div><div class="k">Pairs tested</div></div>
+  <div class="card"><div class="v">{{ enrichment.n_clusters }}</div><div class="k">Clusters</div></div>
+</div>
+
+<h3>4.2 Enrichment across all targets and clusters</h3>
+{% for f in figures.enrichment %}{{ render_figure(f) }}{% endfor %}
+
+<h3>4.3 Significant target/cluster pairs</h3>
+<div class="scroll">{{ tables.enrichment }}</div>
+
+<h3>4.4 Strongest cluster shifts</h3>
+<p class="lede">
+  Per-target detail for the perturbations that move cells furthest between
+  clusters. Each panel shows the target's cluster composition against the
+  reference, its per-cluster odds ratios, and where its cells sit in the
+  embedding.
+</p>
+{% for f in figures.enrichment_per_target %}{{ render_figure(f) }}{% endfor %}
+
+{% if enrichment_extras %}
+<div class="note">
+  <b>{{ enrichment_extras|length }} further per-target enrichment figures</b> are in
+  <code>{{ enrichment_per_gene_dir }}</code>:
+  <div class="filelist">
+    {% for name in enrichment_extra_names %}<div>{{ name }}</div>{% endfor %}
+  </div>
+</div>
+{% endif %}
 {% endif %}
 
 <!-- ===================== Outputs ===================== -->

@@ -195,7 +195,91 @@ dropped.
 
 ---
 
-## 6. Figures and the report
+## 6. Cluster enrichment
+
+Section 5 asks whether a guide knocked its target down. This asks the follow-on
+question: **did losing that gene push cells into a particular transcriptional
+state?** For most screens this is the phenotype of interest.
+
+### The test
+
+For every (target, cluster) pair, a 2x2 table
+
+```
+              in cluster    elsewhere
+    target        a             b
+    reference     c             d
+```
+
+is tested with **Fisher's exact test** (two-sided), with BH-FDR across all pairs
+within a control arm.
+
+An exact test is used rather than chi-square residuals for a concrete reason: on
+the demo lane **26% of the expected counts are below 5**, because the rare
+clusters hold very few reference cells. Chi-square is therefore reported only as
+an omnibus screen, alongside a **permutation p-value** that does not rely on the
+approximation.
+
+### Why `other` is the default reference here
+
+The perturbation-strength test defaults to non-targeting controls. This one does
+not, and the demo data shows why:
+
+| Cluster | NTC cells | Other-target cells |
+|---|---|---|
+| 7 | 3 | 127 |
+| 9 | 4 | 142 |
+
+Clusters 7 and 9 are exactly where the strongest effects live. Against a 3-cell
+denominator an odds ratio is nearly meaningless, and any moderate effect would
+be invisible. Both arms are still computed and reported; `other` drives ranking
+and hit calling.
+
+### Guarding the numbers
+
+* **Haldane-Anscombe correction** (+0.5 to each cell) keeps odds ratios finite
+  when a count is zero.
+* Pairs whose reference contributes fewer than `min_reference_cells` cells in a
+  cluster are **flagged low-power** rather than silently trusted.
+* Clusters smaller than `min_cells_per_cluster` are not tested at all.
+
+### Guide-level concordance
+
+Each target carries several guides, so a real phenotype should appear across
+more than one of them; a single-guide artefact will not. For every significant
+pair the pipeline reports how many of the target's guides independently show the
+same effect.
+
+Agreement is judged **against the observed direction** — a guide supports an
+enrichment when its cells sit in the cluster more often than the reference, and
+supports a depletion when they sit there less often. Testing only the enrichment
+direction would report every genuine depletion as "0 guides agreeing", which
+reads as the exact opposite of the truth.
+
+### Multi-lane runs
+
+Setting `enrichment.stratify_by` (e.g. to `lane_id`) replaces the pooled Fisher
+test with **Cochran-Mantel-Haenszel** across strata, so a cluster that merely
+differs in size between lanes cannot masquerade as a perturbation effect. Off by
+default; the demo is a single lane.
+
+### What it found on the demo lane
+
+Omnibus chi-square = 9,218 on 590 df, permutation p < 0.001 — perturbation
+identity and cluster are strongly associated. Twelve pairs reach FDR < 0.05,
+and the pattern is biologically coherent:
+
+* **SMARCC1** (core BAF/SWI-SNF subunit) takes over cluster 7 — 45% of its cells
+  versus 0.2% of the reference — and is correspondingly depleted from three
+  other clusters. All five testable guides agree.
+* **EZH2 and SUZ12**, both core PRC2 subunits, are independently enriched in the
+  same cluster 9, together with SALL4, NANOG and CTNNB1.
+
+Two members of one complex landing on the same phenotype, from independent
+guides, is the analysis validating itself — no prior knowledge of the complexes
+enters the computation.
+
+## 7. Figures and the report
 
 Every figure passes through a registry that records its path, title, caption and
 section, so a figure cannot be produced without being reachable from the report.

@@ -206,6 +206,49 @@ class PerturbationConfig:
 
 
 @dataclass
+class EnrichmentConfig:
+    """Enrichment of each perturbation across the clusters.
+
+    Asks a different question from :class:`PerturbationConfig`: not "did the
+    guide knock its target down" but "did losing this gene push cells into a
+    particular transcriptional state".
+    """
+
+    enabled: bool = True
+    #: ``obs`` column holding the cluster labels.
+    cluster_key: str = "leiden"
+    #: Same two definitions as the perturbation test.
+    controls: List[str] = field(default_factory=lambda: ["ntc", "other"])
+    #: Defaults to ``other`` here, unlike the perturbation test: non-targeting
+    #: cells are a small group, and in rare clusters they contribute only a
+    #: handful of cells, which leaves no power and unstable odds ratios exactly
+    #: where the strongest effects live.
+    primary_control: str = "other"
+    fdr_alpha: float = 0.05
+    min_cells_per_target: int = 10
+    #: Clusters smaller than this are not tested (they cannot support a result).
+    min_cells_per_cluster: int = 20
+    #: Below this many reference cells in a cluster, the pair is flagged as
+    #: low-power rather than silently trusted.
+    min_reference_cells: int = 10
+    #: Haldane-Anscombe correction keeping odds ratios finite at zero counts.
+    odds_pseudocount: float = 0.5
+    #: ``obs`` column to stratify on (e.g. ``lane_id``), enabling a
+    #: Cochran-Mantel-Haenszel test that controls for differences in cluster
+    #: composition between lanes. Null means a plain pooled Fisher test.
+    stratify_by: Optional[str] = None
+    #: Report how many of a target's guides independently show each hit; a real
+    #: phenotype should appear across several, a single-guide artefact will not.
+    guide_concordance: bool = True
+    #: Guides with fewer cells than this are ignored in the concordance count.
+    min_cells_per_guide: int = 5
+    #: Permutations for the omnibus null (0 disables; the chi-square screen is
+    #: unreliable here because many expected counts are small).
+    permutations: int = 1000
+    top_n_report: int = 12
+
+
+@dataclass
 class ReportConfig:
     """HTML report assembly."""
 
@@ -258,6 +301,7 @@ class Config:
     guides: GuideConfig = field(default_factory=GuideConfig)
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
+    enrichment: EnrichmentConfig = field(default_factory=EnrichmentConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
@@ -346,6 +390,22 @@ class Config:
             raise ValueError("perturbation.fdr_alpha must be in (0, 1)")
         if not 0 < self.perturbation.umap_background_fraction <= 1:
             raise ValueError("perturbation.umap_background_fraction must be in (0, 1]")
+
+        bad = set(self.enrichment.controls) - valid_controls
+        if bad:
+            raise ValueError(
+                f"enrichment.controls may only contain {sorted(valid_controls)}; "
+                f"got extra {sorted(bad)}"
+            )
+        if not self.enrichment.controls:
+            raise ValueError("enrichment.controls must not be empty")
+        if self.enrichment.primary_control not in self.enrichment.controls:
+            raise ValueError(
+                f"enrichment.primary_control ({self.enrichment.primary_control!r}) "
+                f"must be one of enrichment.controls ({self.enrichment.controls})"
+            )
+        if not 0 < self.enrichment.fdr_alpha < 1:
+            raise ValueError("enrichment.fdr_alpha must be in (0, 1)")
 
     # -- convenience --------------------------------------------------------
 

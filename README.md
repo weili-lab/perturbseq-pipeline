@@ -43,6 +43,19 @@ Results are reported against **two control definitions** side by side:
 | `ntc` | cells carrying non-targeting guides | preferred; same handling, no on-target effect |
 | `other` | cells assigned to a *different* target gene | larger n, but controls are themselves perturbed |
 
+**4 · Cluster enrichment**
+The follow-on question: did losing the gene push cells into a particular
+transcriptional state? Every target is tested against every cluster with
+Fisher's exact test (BH-FDR across all pairs), reporting odds ratio, direction,
+and **how many of the target's guides independently agree** — a real phenotype
+appears across several guides, a single-guide artefact does not. Set
+`enrichment.stratify_by: lane_id` on a multi-lane run for a Cochran–Mantel–
+Haenszel test that controls for lane differences in cluster composition.
+
+On the demo lane this recovers SMARCC1 (core SWI/SNF) taking over one cluster,
+and EZH2 with SUZ12 — both core PRC2 subunits — independently landing in the
+same one.
+
 ---
 
 ## Install
