@@ -1,0 +1,34 @@
+# Data — never commit. Large files go to DRIVE_PIPELINE_DIR (see CLAUDE.md).
+*.h5ad
+*.h5
+*.mtx
+*.mtx.gz
+*.rds
+*.loom
+data/
+cache/
+demo_data/
+
+# Run outputs
+results/
+*.log
+
+# Generated configs (machine-specific paths, written by fetch_demo_data.py)
+*.local.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,88 @@
+run:
+  name: perturbseq_run
+  outdir: results
+  seed: 0
+input:
+  mode: auto
+  mtx_dirs: null
+  h5ad: null
+  guide_h5ad: null
+  guide_obs_column: null
+  feature_type_column: feature_types
+  gex_feature_type: Gene Expression
+  guide_feature_types:
+  - Custom
+  - CRISPR Guide Capture
+  var_names: gene_symbols
+  cache_mtx: true
+  counts_layer: null
+  normalized_layer: null
+metadata:
+  file: null
+  key_column: lane_id
+  require_for_multilane: true
+qc:
+  min_genes_per_cell: 200
+  min_cells_per_gene: 3
+  min_genes_final: 1000
+  max_pct_mt: 20.0
+  max_pct_hb: null
+  min_counts_per_cell: null
+  mito_prefix: MT-
+  ribo_prefix:
+  - RPS
+  - RPL
+  hb_pattern: ^HB[^(P)]
+guides:
+  min_umi: 3
+  dominance_ratio: 2.0
+  detection_threshold: 3
+  target_regex: null
+  target_split_delims:
+  - _
+  - '-'
+  - .
+  ntc_patterns:
+  - ^non[-_.]?targeting
+  - ^non$
+  - ^ntc
+  - scramble
+  - ^safe[-_.]?harbor
+  unassigned_label: unassigned
+  ambiguous_label: ambiguous
+  ntc_label: non-targeting
+cluster:
+  target_sum: null
+  n_top_genes: 3000
+  n_pcs: 50
+  n_neighbors: 15
+  leiden_resolution: 1.0
+  umap_min_dist: 0.5
+  batch_key: null
+  regress_out: []
+  scale_max_value: 10.0
+perturbation:
+  controls:
+  - ntc
+  - other
+  primary_control: ntc
+  min_cells_per_target: 10
+  min_control_cells: 10
+  min_pct_expressing_control: 1.0
+  fdr_alpha: 0.05
+  max_log2fc_for_hit: 0.0
+  top_n_report: 12
+  umap_background_fraction: 0.1
+report:
+  title: Perturb-seq analysis report
+  embed_figures: true
+  figure_format: png
+  figure_dpi: 150
+  max_table_rows: 100
+output:
+  h5ad_name: processed.h5ad
+  report_name: report.html
+  large_file_dir: null
+  large_file_threshold_mb: 50.0
+  write_guide_h5ad: true
+  save_figures_pdf: false

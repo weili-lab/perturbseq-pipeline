@@ -1,0 +1,68 @@
+# Small-scale demo: one lane of a human ESC transcription-factor Perturb-seq
+# screen (416 guides, 61 targets, 30 non-targeting controls).
+#
+# Fetch the data first, which also fills in the path below:
+#
+#   python demo/fetch_demo_data.py --dest demo_data --write-config config/demo.local.yaml
+#   perturbseq-pipeline run --config config/demo.local.yaml
+#
+# Run this file directly only if you already have the lane on disk and have
+# edited input.mtx_dirs to point at it.
+
+run:
+  name: demo_ESC_TF_perturbseq
+  outdir: results/demo
+  seed: 0
+
+input:
+  mode: mtx
+  # lane_id -> 10x filtered_feature_bc_matrix directory.
+  # The demo ships a single lane; add the others here for the full experiment.
+  mtx_dirs:
+    S1lane1: demo_data/filtered_feature_bc_matrix_S1lane1
+
+metadata:
+  # One row per lane. Required as soon as a run spans more than one lane;
+  # included here so the demo shows metadata flowing into the .h5ad.
+  file: demo/sample_metadata.csv
+  key_column: lane_id
+
+qc:
+  min_genes_per_cell: 200     # permissive first pass, before the QC figures
+  min_cells_per_gene: 3
+  min_genes_final: 1000       # strict threshold, matches the prototype notebook
+  max_pct_mt: 20.0
+
+guides:
+  min_umi: 3                  # a guide needs at least this many UMIs to count
+  dominance_ratio: 2.0        # top guide must beat the runner-up by this factor
+  detection_threshold: 3
+  # AFF4_P1P2_1 -> AFF4, non_targeting_7 -> non
+  target_split_delims: ["_", "-", "."]
+
+cluster:
+  n_top_genes: 3000
+  n_pcs: 50
+  n_neighbors: 15
+  leiden_resolution: 1.0
+  # Set to lane_id (and install the harmony extra) when running several lanes.
+  batch_key: null
+
+perturbation:
+  controls: ["ntc", "other"]  # report both control definitions
+  primary_control: ntc        # non-targeting cells drive ranking and hit calls
+  min_cells_per_target: 10
+  fdr_alpha: 0.05
+  top_n_report: 12            # remaining targets still get figures on disk
+
+report:
+  title: "Perturb-seq demo report — ESC TF screen (S1 lane 1)"
+  embed_figures: true
+
+output:
+  h5ad_name: demo_processed.h5ad
+  report_name: report.html
+  # Large outputs are moved here instead of being left next to the repo.
+  # On Colab this is the shared Drive folder; set to null to keep them local.
+  large_file_dir: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/pipeline"
+  large_file_threshold_mb: 50.0

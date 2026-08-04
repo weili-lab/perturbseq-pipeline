@@ -1,0 +1,5 @@
+lane_id,sample,lane,cell_line,condition,replicate
+S1lane1,S1,1,ESC,TF_screen,1
+S1lane2,S1,2,ESC,TF_screen,1
+S2lane1,S2,1,ESC,TF_screen,2
+S2lane2,S2,2,ESC,TF_screen,2

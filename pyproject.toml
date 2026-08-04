@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perturbseq-pipeline"
+version = "0.1.0"
+description = "A simple, reproducible Perturb-seq QC, clustering and perturbation-strength pipeline"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Wei Li Lab" }]
+keywords = ["perturb-seq", "crispr", "single-cell", "scanpy"]
+
+dependencies = [
+    "scanpy>=1.10",
+    "anndata>=0.10",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "matplotlib>=3.7",
+    "seaborn>=0.13",
+    "leidenalg>=0.10",
+    "igraph>=0.11",
+    "statsmodels>=0.14",
+    "jinja2>=3.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+harmony = ["harmonypy>=0.0.9"]
+demo = ["gdown>=5.1"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+perturbseq-pipeline = "perturbseq_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+perturbseq_pipeline = ["templates/*.html", "templates/*.css"]

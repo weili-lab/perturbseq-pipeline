@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+  :root {
+    --fg: #1a202c; --muted: #4a5568; --line: #e2e8f0; --bg: #ffffff;
+    --accent: #2b6cb0; --warn-bg: #fffaf0; --warn-line: #dd6b20;
+    --card: #f7fafc; --hit: #c53030;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 24px 80px; }
+  header { border-bottom: 3px solid var(--accent); padding-bottom: 16px; margin-bottom: 8px; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  h2 {
+    font-size: 22px; margin: 48px 0 4px; padding-top: 16px;
+    border-top: 1px solid var(--line);
+  }
+  h3 { font-size: 17px; margin: 28px 0 6px; color: var(--muted); }
+  .sub { color: var(--muted); font-size: 14px; }
+  .lede { color: var(--muted); margin: 4px 0 20px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 12px 0; }
+  th, td { border: 1px solid var(--line); padding: 6px 9px; text-align: left; }
+  th { background: var(--card); font-weight: 600; }
+  tr:nth-child(even) td { background: #fcfdfe; }
+  .scroll { overflow-x: auto; max-height: 520px; overflow-y: auto; border: 1px solid var(--line); }
+  .scroll table { margin: 0; }
+  figure { margin: 22px 0; }
+  figure img { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 4px; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  figcaption b { color: var(--fg); }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+  .card {
+    flex: 1 1 150px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 6px; padding: 12px 14px;
+  }
+  .card .v { font-size: 22px; font-weight: 600; }
+  .card .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  .warn {
+    background: var(--warn-bg); border-left: 4px solid var(--warn-line);
+    padding: 10px 14px; margin: 16px 0; font-size: 14px; border-radius: 0 4px 4px 0;
+  }
+  .warn ul { margin: 6px 0 0 18px; padding: 0; }
+  .note {
+    background: var(--card); border-left: 4px solid var(--accent);
+    padding: 10px 14px; margin: 16px 0; font-size: 14px; border-radius: 0 4px 4px 0;
+  }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  details { margin: 16px 0; }
+  summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+  pre {
+    background: var(--card); border: 1px solid var(--line); border-radius: 4px;
+    padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.45;
+  }
+  .toc a { color: var(--accent); text-decoration: none; margin-right: 18px; font-size: 14px; }
+  .toc a:hover { text-decoration: underline; }
+  .filelist { columns: 2; font-size: 12.5px; color: var(--muted); }
+  footer { margin-top: 60px; padding-top: 16px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>{{ title }}</h1>
+  <div class="sub">
+    Run <b>{{ run_name }}</b> &middot; generated {{ generated_at }} &middot;
+    perturbseq-pipeline v{{ version }}
+  </div>
+</header>
+
+<p class="toc">
+  <a href="#summary">Summary</a>
+  <a href="#qc">1. Quality control</a>
+  <a href="#clustering">2. Clustering</a>
+  <a href="#perturbation">3. Perturbation strength</a>
+  <a href="#outputs">Outputs</a>
+</p>
+
+<h2 id="summary">Run summary</h2>
+<div class="cards">
+  {% for k, v in summary_cards %}
+  <div class="card"><div class="v">{{ v }}</div><div class="k">{{ k }}</div></div>
+  {% endfor %}
+</div>
+
+<table>
+  <tr><th style="width:210px">Input mode</th><td>{{ input_mode }}</td></tr>
+  <tr><th>Input source</th><td class="mono">{{ input_source }}</td></tr>
+  <tr><th>Lanes</th><td>{{ lanes }}</td></tr>
+  <tr><th>Sample metadata</th><td class="mono">{{ metadata_source }}</td></tr>
+  <tr><th>Guide information</th><td>{{ guide_source_text }}</td></tr>
+</table>
+
+{% if warnings %}
+<div class="warn">
+  <b>Warnings from this run</b>
+  <ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<!-- ===================== 1. QC ===================== -->
+<h2 id="qc">1. Quality control</h2>
+<p class="lede">
+  Standard single-cell metrics first, then the Perturb-seq-specific guide
+  diagnostics. Metrics are computed before the strict filters are applied, so
+  the distributions below show what the thresholds acted on.
+</p>
+
+<h3>1.1 Filtering steps</h3>
+{{ tables.qc_steps }}
+
+<h3>1.2 Per-lane summary</h3>
+{{ tables.qc_summary }}
+
+<h3>1.3 Cell QC diagnostics</h3>
+{% for f in figures.qc %}{{ render_figure(f) }}{% endfor %}
+
+<h3>1.4 Perturb-seq guide QC</h3>
+<p class="lede">
+  Guide calling: a cell is assigned to its top guide when that guide reaches
+  <code>{{ cfg.guides.min_umi }}</code> UMIs and exceeds the runner-up by a
+  factor of <code>{{ cfg.guides.dominance_ratio }}</code>. Cells failing the
+  dominance rule are <i>ambiguous</i>; cells with no guide counts are
+  <i>unassigned</i>. Both are kept in the object and shown here.
+</p>
+{{ tables.guide_qc }}
+{% for f in figures.guides %}{{ render_figure(f) }}{% endfor %}
+
+<!-- ===================== 2. Clustering ===================== -->
+<h2 id="clustering">2. Clustering analysis</h2>
+<p class="lede">
+  Counts were library-size normalized and log1p-transformed,
+  {{ cfg.cluster.n_top_genes }} highly variable genes selected, reduced to
+  {{ cfg.cluster.n_pcs }} principal components{% if cfg.cluster.batch_key %},
+  batch-corrected with Harmony on <code>{{ cfg.cluster.batch_key }}</code>{% endif %},
+  then embedded with UMAP and clustered with Leiden at resolution
+  {{ cfg.cluster.leiden_resolution }}.
+</p>
+
+<h3>2.1 Cluster overview</h3>
+{{ tables.clusters }}
+
+<h3>2.2 Embedding diagnostics</h3>
+{% for f in figures.clustering %}{{ render_figure(f) }}{% endfor %}
+
+<!-- ===================== 3. Perturbation ===================== -->
+<h2 id="perturbation">3. Perturbation strength</h2>
+<p class="lede">
+  For every target gene that is also measured in the expression matrix, the
+  gene's own expression is compared between cells carrying guides against it and
+  control cells. An effective CRISPR perturbation lowers that expression, so a
+  target is only called <b>effective</b> when the reduction is significant
+  (KS test, BH-FDR &lt; {{ cfg.perturbation.fdr_alpha }}) <i>and</i> the fold
+  change is negative.
+</p>
+
+<div class="note">
+  <b>Control groups.</b> Results are reported against
+  {{ controls_described }}.
+  Ranking, hit calling and the figures below use
+  <b>{{ primary_control_label }}</b>{% if primary_fallback %}
+  (the requested control was unavailable){% endif %}.
+</div>
+
+<h3>3.1 Results across all targets</h3>
+<div class="cards">
+  {% for k, v in perturbation_cards %}
+  <div class="card"><div class="v">{{ v }}</div><div class="k">{{ k }}</div></div>
+  {% endfor %}
+</div>
+{% for f in figures.perturbation %}{{ render_figure(f) }}{% endfor %}
+
+<h3>3.2 Ranked target table</h3>
+<div class="scroll">{{ tables.perturbation }}</div>
+
+{% if tables.skipped %}
+<h3>3.3 Targets that could not be tested</h3>
+<div class="scroll">{{ tables.skipped }}</div>
+{% endif %}
+
+<h3>3.{% if tables.skipped %}4{% else %}3{% endif %} Strongest perturbation effects</h3>
+<p class="lede">
+  The {{ n_top_shown }} strongest knockdowns. Each panel shows the cumulative
+  distribution of the target's expression, the same values as violins, and where
+  the perturbed cells sit in the embedding.
+</p>
+{% for f in figures.per_gene %}{{ render_figure(f) }}{% endfor %}
+
+{% if extra_figures %}
+<div class="note">
+  <b>{{ extra_figures|length }} further per-target figures</b> were written but
+  not embedded here. They are in
+  <code>{{ per_gene_dir }}</code> — one file per target, same layout as above:
+  <div class="filelist">
+    {% for name in extra_figure_names %}<div>{{ name }}</div>{% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ===================== Outputs ===================== -->
+<h2 id="outputs">Outputs</h2>
+{{ tables.outputs }}
+
+<details>
+  <summary>Full configuration used for this run</summary>
+  <pre>{{ config_yaml }}</pre>
+</details>
+
+<details>
+  <summary>Figure manifest ({{ n_figures }} figures)</summary>
+  <div class="scroll">{{ tables.manifest }}</div>
+</details>
+
+<details>
+  <summary>Software versions</summary>
+  <pre>{{ versions }}</pre>
+</details>
+
+<footer>
+  Generated by <b>perturbseq-pipeline</b> v{{ version }} &middot;
+  {{ generated_at }} &middot; run <span class="mono">{{ run_name }}</span>
+</footer>
+
+</div>
+</body>
+</html>
