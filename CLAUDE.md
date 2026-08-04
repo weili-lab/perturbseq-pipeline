@@ -55,6 +55,10 @@ The report contains diagnostic figures plus representative figures for the
 3. **All** diagnostic figures on disk. When there are many targeted genes, the
    per-gene figures that did *not* make it into the report still go to a
    separate figures folder — nothing is silently dropped.
+4. A **`.tar.gz` archive** of the run directory holding everything *except* the
+   `.h5ad` matrices, so a whole run can be shared as one file. Controlled by
+   `output.archive` / `archive_name` / `archive_exclude`; built last so the
+   finished report is inside it, and it never packs itself.
 
 ### Demo
 

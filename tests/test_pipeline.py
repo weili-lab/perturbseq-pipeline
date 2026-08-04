@@ -203,6 +203,65 @@ def test_layers_follow_the_documented_contract(mtx_run):
     assert ldense.max() < 50, "lognorm layer should hold log-scale values"
 
 
+def test_results_archive_bundles_everything_except_matrices(mtx_run):
+    """The archive must carry the readable outputs but not the .h5ad files."""
+    import tarfile
+
+    assert mtx_run.archive is not None and mtx_run.archive.is_file()
+    with tarfile.open(mtx_run.archive, "r:gz") as tar:
+        names = tar.getnames()
+
+    assert not any(n.endswith(".h5ad") for n in names), "h5ad must be excluded"
+    assert not any(n.endswith(".tar.gz") for n in names), "archive must not nest itself"
+
+    tails = {n.split("/", 1)[-1] for n in names}
+    assert "report.html" in tails
+    assert any(t.startswith("figures/") and t.endswith(".png") for t in tails)
+    assert any(t.startswith("tables/") and t.endswith(".csv") for t in tails)
+    assert "logs/run.log" in tails
+
+    # Everything unpacks under a single directory named for the run.
+    roots = {n.split("/", 1)[0] for n in names}
+    assert roots == {"test"}, roots
+
+    # Completeness: every file in the run directory that is not excluded must
+    # be in the archive — "all files except the matrices", with nothing lost.
+    on_disk = {
+        str(p.relative_to(mtx_run.outdir))
+        for p in mtx_run.outdir.rglob("*")
+        if p.is_file()
+        and not p.name.endswith((".h5ad", ".h5", ".loom", ".tar.gz"))
+    }
+    assert on_disk - tails == set(), f"missing from archive: {sorted(on_disk - tails)}"
+
+
+def test_archive_can_be_disabled(synthetic, tmp_path):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_noarchive")
+    cfg.output.archive = False
+    result = run_pipeline(cfg)
+    assert result.archive is None
+    assert not list(result.outdir.glob("*.tar.gz"))
+
+
+def test_archive_exclude_patterns_are_honoured(synthetic, tmp_path):
+    import tarfile
+
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_excl")
+    cfg.output.archive_name = "custom_bundle.tar.gz"
+    cfg.output.archive_exclude = ["*.h5ad", "*.tar.gz", "*.png"]
+    result = run_pipeline(cfg)
+
+    assert result.archive.name == "custom_bundle.tar.gz"
+    with tarfile.open(result.archive, "r:gz") as tar:
+        names = tar.getnames()
+    assert not any(n.endswith(".png") for n in names), "figures should be excluded here"
+    assert any(n.endswith("report.html") for n in names)
+
+
 def test_report_is_self_contained(mtx_run):
     html = mtx_run.report.read_text()
     assert "{{" not in html and "{%" not in html, "unrendered template syntax"

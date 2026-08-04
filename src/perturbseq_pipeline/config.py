@@ -234,6 +234,17 @@ class OutputConfig:
     #: Also write the guide count matrix as its own ``.h5ad``.
     write_guide_h5ad: bool = True
     save_figures_pdf: bool = False
+    #: Bundle the run outputs into a single ``.tar.gz`` for sharing. The
+    #: matrices are excluded by default (see :attr:`archive_exclude`), so the
+    #: archive stays small enough to attach to an email or a GitHub release.
+    archive: bool = True
+    #: Archive filename. When null, ``<run.name>_results.tar.gz`` is used.
+    archive_name: Optional[str] = None
+    #: Glob patterns (matched against paths relative to the run directory)
+    #: excluded from the archive.
+    archive_exclude: List[str] = field(
+        default_factory=lambda: ["*.h5ad", "*.h5", "*.loom", "*.tar.gz"]
+    )
 
 
 @dataclass

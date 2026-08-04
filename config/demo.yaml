@@ -62,6 +62,11 @@ report:
 output:
   h5ad_name: demo_processed.h5ad
   report_name: report.html
+  # Bundle the run outputs into one shareable .tar.gz. The matrices are
+  # excluded, so the archive holds the report, figures, tables and logs.
+  archive: true
+  archive_name: null            # defaults to <run.name>_results.tar.gz
+  archive_exclude: ["*.h5ad", "*.h5", "*.loom", "*.tar.gz"]
   # Large outputs are moved here instead of being left next to the repo.
   # On Colab this is the shared Drive folder; set to null to keep them local.
   large_file_dir: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/pipeline"

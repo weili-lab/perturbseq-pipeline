@@ -468,6 +468,75 @@ def write_h5ad(adata: ad.AnnData, path: Path, compression: str = "gzip") -> Path
     return path
 
 
+def archive_results(outdir: Path, cfg: Config) -> Optional[Path]:
+    """Bundle the run directory into a ``.tar.gz`` for sharing.
+
+    Matrices are excluded by ``output.archive_exclude`` (``*.h5ad`` by default),
+    so the archive carries the report, figures, tables and logs — the parts
+    someone actually reads — at a size that can be attached to an email or a
+    GitHub release. Returns ``None`` when archiving is disabled.
+    """
+    if not cfg.output.archive:
+        return None
+
+    import fnmatch
+    import tarfile
+
+    outdir = Path(outdir)
+    name = cfg.output.archive_name or f"{cfg.run.name}_results.tar.gz"
+    if not name.endswith((".tar.gz", ".tgz")):
+        name += ".tar.gz"
+    dest = outdir / name
+
+    patterns = list(cfg.output.archive_exclude or [])
+
+    def excluded(rel: Path) -> bool:
+        text = str(rel)
+        return any(
+            fnmatch.fnmatch(text, p) or fnmatch.fnmatch(rel.name, p) for p in patterns
+        )
+
+    members: List[Path] = []
+    skipped: List[Path] = []
+    for path in sorted(outdir.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(outdir)
+        # Never pack the archive into itself, even mid-write.
+        if path == dest or excluded(rel):
+            skipped.append(rel)
+            continue
+        members.append(path)
+
+    if not members:
+        logger.warning("Nothing to archive in %s", outdir)
+        return None
+
+    # Write to a temporary name first so a partial archive is never left behind
+    # and cannot be picked up by the walk above.
+    tmp = dest.with_suffix(dest.suffix + ".partial")
+    root = cfg.run.name or outdir.name
+    try:
+        with tarfile.open(tmp, "w:gz") as tar:
+            for path in members:
+                tar.add(path, arcname=str(Path(root) / path.relative_to(outdir)))
+        tmp.replace(dest)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+    size_mb = dest.stat().st_size / 1e6
+    logger.info(
+        "Archived %d file(s) to %s (%.1f MB); excluded %d matching %s",
+        len(members),
+        dest.name,
+        size_mb,
+        len(skipped),
+        patterns,
+    )
+    return dest
+
+
 def relocate_if_large(path: Path, cfg: Config) -> Path:
     """Move an output above the size threshold to ``output.large_file_dir``.
 

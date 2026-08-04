@@ -158,8 +158,27 @@ results/<run>/
 │       ├── perturbation_waterfall.png
 │       └── per_gene/                # EVERY target, not just those in the report
 ├── tables/                          # CSVs for all report tables
-└── logs/  run.log + resolved_config.yaml
+├── logs/  run.log + resolved_config.yaml
+└── <run>_results.tar.gz             # shareable bundle, matrices excluded
 ```
+
+### The results archive
+
+Every run bundles its outputs into one `.tar.gz` — the report, all figures,
+tables and logs, with the `.h5ad` matrices left out so the archive stays small
+enough to email or attach to a GitHub release. It unpacks into a single
+directory named after the run.
+
+```yaml
+output:
+  archive: true                 # set false to skip
+  archive_name: null            # defaults to <run.name>_results.tar.gz
+  archive_exclude: ["*.h5ad", "*.h5", "*.loom", "*.tar.gz"]
+```
+
+Patterns are matched against paths relative to the run directory (and against
+bare filenames), so `"figures/perturbation/per_gene/*"` would drop just the
+per-target figures.
 
 Large outputs can be redirected off local disk (useful on Colab):
 

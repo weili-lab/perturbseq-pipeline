@@ -86,3 +86,10 @@ output:
   large_file_threshold_mb: 50.0
   write_guide_h5ad: true
   save_figures_pdf: false
+  archive: true
+  archive_name: null
+  archive_exclude:
+  - '*.h5ad'
+  - '*.h5'
+  - '*.loom'
+  - '*.tar.gz'

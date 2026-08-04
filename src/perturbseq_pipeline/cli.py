@@ -33,6 +33,8 @@ class PipelineResult:
     report: Path
     h5ad: Path
     guide_h5ad: Optional[Path]
+    #: ``.tar.gz`` bundle of the run outputs (None when archiving is disabled).
+    archive: Optional[Path] = None
     tables: Dict[str, Path] = field(default_factory=dict)
     figures_dir: Optional[Path] = None
     n_cells: int = 0
@@ -194,6 +196,9 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     }
     if guide_h5ad_path:
         outputs["Guide count h5ad"] = str(guide_h5ad_path)
+    archive_name = cfg.output.archive_name or f"{cfg.run.name}_results.tar.gz"
+    if cfg.output.archive:
+        outputs["Results archive"] = str(outdir / archive_name)
 
     report_inputs = ReportInputs(
         cfg=cfg,
@@ -222,6 +227,9 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     )
     report_path = build_report(report_inputs, outdir / cfg.output.report_name)
 
+    # Archive last, so the bundle contains the finished report.
+    archive_path = io_mod.archive_results(outdir, cfg)
+
     runtime = time.time() - start
     logger.info(
         "Done in %.1f s — %d/%d input cells retained", runtime, expr.n_obs, n_cells_input
@@ -232,6 +240,7 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
         report=report_path,
         h5ad=h5ad_path,
         guide_h5ad=guide_h5ad_path,
+        archive=archive_path,
         tables=table_paths,
         figures_dir=registry.figdir,
         n_cells=expr.n_obs,
