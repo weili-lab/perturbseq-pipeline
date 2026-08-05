@@ -200,6 +200,28 @@ results/<run>/
 └── <run>_results.tar.gz             # shareable bundle, matrices excluded
 ```
 
+### The guide barcode table
+
+Every run also exports the guide count matrix as a long `barcode -> guide`
+table (`<run>_guide_barcodes.txt`) — the format
+[PS_python](https://github.com/weili-lab/PS_python) consumes. It was verified to
+reproduce that project's `BARCODE_10x_Merged.txt` exactly: filtering the matrix
+at >= 3 UMIs matches the original on per-cell totals and guides-per-cell for
+100% of shared cells.
+
+```yaml
+output:
+  write_guide_table: true
+  guide_table_min_umi: 3
+```
+
+Two deliberate differences: the `gene` column uses the pipeline's target parser
+(so `CD81.2` collapses to `CD81` instead of becoming its own target), and an
+`assignment` column carries the pipeline's dominance-rule call so consumers get
+the same per-cell answer. Rows are ordered with the dominant guide last, so even
+a naive "last row wins" reader lands on the right guide. See
+[`docs/ps_python_proposal.md`](docs/ps_python_proposal.md).
+
 ### The results archive
 
 Every run bundles its outputs into one `.tar.gz` — the report, all figures,
