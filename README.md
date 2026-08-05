@@ -140,6 +140,15 @@ perturbseq-pipeline init-config my_run.yaml
 
 ### Option 1 — 10x count matrices
 
+Every directory needs `barcodes.tsv.gz`, `features.tsv.gz` and `matrix.mtx.gz`.
+Which of the two layouts below you have depends on how the run was quantified.
+
+#### 1.1 Guides and gene expression in one matrix
+
+The CellRanger layout: one directory per lane, holding both `Gene Expression`
+and guide (`Custom` / `CRISPR Guide Capture`) features, told apart by the third
+column of `features.tsv.gz`. This is the ESC TF Perturb-seq screen.
+
 ```yaml
 input:
   mode: mtx
@@ -152,9 +161,77 @@ cluster:
   batch_key: lane_id     # Harmony correction across lanes
 ```
 
-Each directory needs `barcodes.tsv.gz`, `features.tsv.gz` and `matrix.mtx.gz`,
-with both `Gene Expression` and guide (`Custom` / `CRISPR Guide Capture`)
-features.
+The pipeline splits the two feature classes itself. If your file names the guide
+class something else, set `input.guide_feature_types`.
+
+#### 1.2 Gene expression and guides quantified separately
+
+The STARsolo layout: each lane has two independent MTX directories, and
+`features.tsv.gz` carries no usable class column — guides are often labelled
+`Gene Expression` too, so there is nothing to split on. This is the THP-1 /
+M0 / M1 screen:
+
+```
+count_matrices/{THP1,M0,M1}/{ch_1,ch_2}/
+  GEX/filtered/    <- genes, called cells only
+  sgRNA/raw/       <- guides, the entire barcode whitelist
+```
+
+Add `guide_mtx_dirs` alongside `mtx_dirs`, **using the same lane keys**:
+
+```yaml
+input:
+  mode: mtx
+  mtx_dirs:                                     # gene expression
+    THP1_ch1: /path/THP1/ch_1/GEX/filtered
+    M0_ch1:   /path/M0/ch_1/GEX/filtered
+    M1_ch1:   /path/M1/ch_1/GEX/filtered
+  guide_mtx_dirs:                               # guide counts, same keys
+    THP1_ch1: /path/THP1/ch_1/sgRNA/raw
+    M0_ch1:   /path/M0/ch_1/sgRNA/raw
+    M1_ch1:   /path/M1/ch_1/sgRNA/raw
+  var_names: gene_symbols
+
+guides:
+  # Strip only a trailing _<number>, so multi-token targets survive:
+  #   ADGRV1_1 -> ADGRV1, gene_desert_1 -> gene_desert, non-targeting_20 -> non-targeting
+  # The default first-delimiter split would give a target called "gene".
+  target_regex: '^(.+)_\d+$'
+  ntc_patterns: ["^non[-_.]?targeting$"]
+
+metadata:
+  file: my_samples.csv
+cluster:
+  batch_key: lane_id
+```
+
+Three things worth knowing about this layout:
+
+**The keys must match exactly.** A lane in one mapping and not the other is
+rejected at config load, rather than after a long read.
+
+**The guide matrix is usually much larger than the cell set.** STARsolo emits
+guide counts over the whole barcode whitelist — 737,280 barcodes against 36,364
+called cells in the THP-1 run. The pipeline subsets it to the barcodes in the
+expression matrix, filling any missing ones with zeros rather than dropping
+those cells, and logs the match rate per lane (it was 100% for all three THP-1
+channels). No overlap at all is an error, since that almost always means the two
+matrices use different barcode formats.
+
+**Point GEX at the called cells and guides at whatever exists.** In the THP-1
+tree that is `GEX/filtered` and `sgRNA/raw` — `sgRNA` has no `filtered` output.
+
+Check your guide naming before a long run:
+
+```bash
+python -c "
+from perturbseq_pipeline.config import Config
+from perturbseq_pipeline.guides import parse_target_genes, is_non_targeting
+cfg = Config.from_yaml('config/my_run.yaml')
+names = ['ADGRV1_1', 'gene_desert_3', 'non-targeting_20']
+t = parse_target_genes(names, cfg.guides)
+print(dict(zip(names, t)), dict(zip(t, is_non_targeting(t, cfg.guides))))"
+```
 
 ### Option 2 — an existing `.h5ad`
 
