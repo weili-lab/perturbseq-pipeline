@@ -1,7 +1,0 @@
-lane_id,sample,channel,cell_state,description
-THP1_ch1,THP1,ch_1,THP1,undifferentiated THP-1 monocyte
-THP1_ch2,THP1,ch_2,THP1,undifferentiated THP-1 monocyte
-M0_ch1,M0,ch_1,M0,PMA-differentiated macrophage
-M0_ch2,M0,ch_2,M0,PMA-differentiated macrophage
-M1_ch1,M1,ch_1,M1,LPS/IFNg-polarised macrophage
-M1_ch2,M1,ch_2,M1,LPS/IFNg-polarised macrophage

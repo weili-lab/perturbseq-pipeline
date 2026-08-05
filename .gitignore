@@ -16,6 +16,10 @@ results/
 # Generated configs (machine-specific paths, written by fetch_demo_data.py)
 *.local.yaml
 
+# Configs and metadata for unpublished datasets — keep these on Drive, not here
+*thp1*
+*THP1*
+
 # Python
 __pycache__/
 *.py[cod]
