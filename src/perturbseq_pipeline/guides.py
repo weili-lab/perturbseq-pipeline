@@ -5,7 +5,8 @@ guide counts. That is replaced here by a chunked, vectorized top-2 search, and
 the assignment rule is stated once with named thresholds:
 
 * no guide counts at all              -> ``unassigned``
-* top >= ``min_umi`` and top > ``dominance_ratio`` x second  -> assigned
+* top >= ``min_umi``, top > ``dominance_ratio`` x second, and (optionally)
+  second <= ``max_second_umi``        -> assigned
 * anything else                       -> ``ambiguous``
 
 Both failure categories are kept in the object and reported; they are never
@@ -167,6 +168,17 @@ def _assign_from_matrix(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad
     assigned = (top_val >= max(gcfg.min_umi, 1)) & (
         top_val > gcfg.dominance_ratio * second_val
     )
+    if gcfg.max_second_umi is not None and gcfg.max_second_umi >= 0:
+        # Multiplet gate: real counts of a runner-up guide mean two cells in the
+        # droplet, which the ratio alone misses at high depth.
+        n_before = int(assigned.sum())
+        assigned &= second_val <= gcfg.max_second_umi
+        logger.info(
+            "Multiplet gate (second guide <= %d UMIs): %d -> %d assigned cells",
+            gcfg.max_second_umi,
+            n_before,
+            int(assigned.sum()),
+        )
     has_counts = top_val > 0
 
     guide_call = np.full(expr.n_obs, gcfg.unassigned_label, dtype=object)

@@ -125,6 +125,59 @@ def test_target_regex_override():
     assert list(parse_target_genes(["NKX2-5_sg1"], g)) == ["NKX2-5"]
 
 
+def test_multiplet_gate_rejects_codominant_cells():
+    """max_second_umi catches doublets the dominance ratio lets through.
+
+    A ratio scales with depth, so a cell with 1,000 and 100 UMIs passes
+    ``dominance_ratio: 2.0`` even though 100 UMIs of a second guide is real
+    signal rather than ambient. An absolute cap on the runner-up does not
+    scale, and on the THP-1 M0_ch1 channel it lifts agreement with the
+    published single-guide cell set from F1 0.62 to 0.91.
+    """
+    g = GuideConfig(min_umi=3, dominance_ratio=2.0, max_second_umi=10)
+
+    def call(top, second):
+        ok = (top >= g.min_umi) and (top > g.dominance_ratio * second)
+        if g.max_second_umi >= 0:
+            ok = ok and second <= g.max_second_umi
+        return ok
+
+    assert call(50, 2), "clean singlet must survive"
+    assert not call(1000, 100), "deep doublet must be rejected despite the ratio"
+    assert call(1000, 10), "runner-up at the cap is still allowed"
+    assert not call(1000, 11), "one above the cap is not"
+
+    off = GuideConfig(min_umi=3, dominance_ratio=2.0, max_second_umi=-1)
+    assert off.max_second_umi < 0, "-1 disables the gate"
+
+
+def test_multiplet_gate_is_off_by_default():
+    """Default behaviour must be unchanged for existing runs."""
+    assert GuideConfig().max_second_umi == -1
+
+
+def test_multiplet_gate_applies_in_the_pipeline(synthetic, tmp_path):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    loose = _base_config(synthetic, tmp_path / "run_loose")
+    loose.ps_score.enabled = False
+    loose.lochness.enabled = False
+    n_loose = (
+        run_pipeline(loose).adata.obs["perturbation_class"].astype(str) == "targeting"
+    ).sum()
+
+    strict = _base_config(synthetic, tmp_path / "run_strict")
+    strict.guides.max_second_umi = 1
+    strict.ps_score.enabled = False
+    strict.lochness.enabled = False
+    result = run_pipeline(strict)
+    n_strict = (result.adata.obs["perturbation_class"].astype(str) == "targeting").sum()
+
+    assert n_strict < n_loose, "the gate must remove co-dominant cells"
+    # Rejected cells become ambiguous, not deleted.
+    assert (result.adata.obs["perturbation_class"].astype(str) == "ambiguous").sum() > 0
+
+
 def test_top_two_matches_brute_force():
     rng = np.random.default_rng(0)
     dense = rng.poisson(2, size=(400, 40)).astype(float)

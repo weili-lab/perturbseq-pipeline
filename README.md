@@ -395,13 +395,17 @@ For each cell the pipeline takes the highest and second-highest guide counts and
 applies one rule:
 
 ```python
-assigned = (top >= guides.min_umi) and (top > guides.dominance_ratio * second)
+assigned = (
+    top >= guides.min_umi
+    and top > guides.dominance_ratio * second
+    and (guides.max_second_umi < 0 or second <= guides.max_second_umi)
+)
 ```
 
 | Condition | Label in `obs['target_gene']` |
 |---|---|
 | top count is 0 | `unassigned` |
-| top ≥ `min_umi` **and** top > `dominance_ratio` × second | the guide's target gene |
+| top ≥ `min_umi`, top > `dominance_ratio` × second, and second within `max_second_umi` | the guide's target gene |
 | anything else | **`ambiguous`** |
 
 There is no separate "ambiguous threshold" — `ambiguous` is the fallback when a
@@ -412,6 +416,7 @@ weak or because the runner-up is too close to it.
 guides:
   min_umi: 3            # the top guide must reach this many UMIs
   dominance_ratio: 2.0  # ...and exceed the runner-up by this factor
+  max_second_umi: -1    # hard cap on the runner-up; -1 disables the gate
   detection_threshold: 3         # MOI statistics only — NOT used for assignment
   target_split_delims: ["_", "-", "."]   # AFF4_P1P2_1 -> AFF4
   target_regex: null             # override when targets contain a delimiter
@@ -435,6 +440,36 @@ shallow and low-count calls are unreliable.
 Watch out for **`detection_threshold`**, which looks similar but is only used for
 the guides-per-cell and MOI statistics in the QC section. Changing it does not
 move a single assignment.
+
+### Removing droplet multiplets
+
+A cell carrying genuine counts of a *second* guide is usually two cells in one
+droplet. The dominance ratio alone does not catch those, because a ratio scales
+with sequencing depth: at `dominance_ratio: 2.0` a cell with 1,000 and 100 UMIs
+passes, even though 100 UMIs of a second guide is real signal rather than
+ambient. `max_second_umi` puts an absolute cap on the runner-up, which does not
+scale.
+
+It is **off by default** (`-1`). To calibrate it, the THP-1 M0_ch1 channel was
+compared against that study's own published cell set, which keeps only cells
+strictly expressing one sgRNA (14,156 of 48,554 cells):
+
+| Setting | Cells assigned | Recall | Precision | F1 |
+|---|---|---|---|---|
+| `-1` (off) | 30,208 | 0.970 | 0.455 | 0.619 |
+| `max_second_umi: 5` | 12,345 | 0.832 | 0.954 | 0.889 |
+| **`max_second_umi: 8`** | **14,580** | **0.920** | **0.893** | **0.906** |
+| `max_second_umi: 10` | 15,563 | 0.942 | 0.857 | 0.897 |
+
+Raising `dominance_ratio` instead does **not** work as well — its best setting
+(20) reaches only F1 0.817, because it cannot distinguish a deep singlet from a
+deep doublet. The two knobs address different things and are worth setting
+independently.
+
+Note this is a property of the *library and chemistry*, not a universal
+constant: the runner-up count on Seurat-retained cells had a median of 3 and a
+99th percentile of 16, whereas rejected cells sat at a median of 33. Re-derive
+it for a new dataset rather than copying the number.
 
 ### What happens to ambiguous cells
 

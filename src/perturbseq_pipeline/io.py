@@ -610,9 +610,14 @@ def read_guide_table(
             counts = rows[count_col].to_numpy(dtype=float)
             top = float(counts[0])
             second = float(counts[1]) if len(counts) > 1 else 0.0
+            gate_ok = (
+                gcfg.max_second_umi is None
+                or gcfg.max_second_umi < 0
+                or second <= gcfg.max_second_umi
+            )
             if top < max(gcfg.min_umi, 1):
                 labels[cell_id] = gcfg.unassigned_label
-            elif top > gcfg.dominance_ratio * second:
+            elif top > gcfg.dominance_ratio * second and gate_ok:
                 labels[cell_id] = str(rows.iloc[0][gene_col])
             else:
                 labels[cell_id] = gcfg.ambiguous_label

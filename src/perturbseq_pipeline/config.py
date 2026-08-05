@@ -152,6 +152,15 @@ class GuideConfig:
 
     min_umi: int = 3
     dominance_ratio: float = 2.0
+    #: Hard cap on the runner-up guide's UMI count. A cell carrying real counts
+    #: of a second guide is usually a droplet multiplet, and the dominance ratio
+    #: alone will not catch it: at ratio 2.0 a cell with 1,000 and 100 UMIs
+    #: passes, though 100 UMIs of a second guide is signal, not ambient. The
+    #: ratio scales with depth; this does not.
+    #:
+    #: ``-1`` disables the gate, which is the default so existing runs are
+    #: unaffected. Cells failing it become ``ambiguous``.
+    max_second_umi: int = -1
     #: Guide counts above this are considered "detected" for MOI statistics.
     detection_threshold: int = 3
     #: Regex whose first group is the target gene. When null, the guide ID is
