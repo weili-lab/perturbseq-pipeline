@@ -1516,6 +1516,44 @@ def plot_ps_lda(expr, results, reg: FigureRegistry, cfg: Config) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _lochness_norm(vmax: float):
+    """Colour scale for lochNESS: linear near 0, logarithmic in the tail.
+
+    The score is bounded below by -1 and unbounded above, so a symmetric linear
+    scale both wastes half its range and clips the extreme cells that matter.
+    """
+    import matplotlib.colors as mcolors
+
+    vmax = max(float(vmax), 1.0)
+    return mcolors.SymLogNorm(linthresh=1.0, linscale=1.0, vmin=-vmax, vmax=vmax, base=10)
+
+
+def _label_clusters(ax, expr, coords: np.ndarray, highlight: str = "") -> None:
+    """Write cluster labels at their centroids on an embedding panel."""
+    if CLUSTER_KEY not in expr.obs.columns:
+        return
+    clusters = expr.obs[CLUSTER_KEY].astype(str).to_numpy()
+    for cl in np.unique(clusters):
+        m = clusters == cl
+        if m.sum() == 0:
+            continue
+        cx, cy = np.median(coords[m, 0]), np.median(coords[m, 1])
+        is_top = str(cl) == str(highlight)
+        ax.text(
+            cx, cy, str(cl),
+            fontsize=8 if is_top else 6.5,
+            fontweight="bold" if is_top else "normal",
+            color="#1a202c" if is_top else "#4a5568",
+            ha="center", va="center",
+            bbox=dict(
+                boxstyle="round,pad=0.15",
+                facecolor="#fefcbf" if is_top else "white",
+                edgecolor="none",
+                alpha=0.85 if is_top else 0.6,
+            ),
+        )
+
+
 def plot_lochness(expr, results, reg: FigureRegistry, cfg: Config) -> None:
     """Overview figures plus one per-perturbation lochNESS map."""
     if results is None or results.summary.empty:
@@ -1647,17 +1685,26 @@ def plot_lochness(expr, results, reg: FigureRegistry, cfg: Config) -> None:
     for rank, gene in enumerate(summary["target_gene"]):
         score = np.asarray(results.scores[gene], dtype=float)
         ok = np.isfinite(score)
-        lim = float(np.nanpercentile(np.abs(score[ok]), 99)) or 1.0
         own = expr.obs[cfg.lochness.genotype_key].astype(str).to_numpy() == gene
 
+        row = summary[summary["target_gene"] == gene].iloc[0]
         fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.8))
 
         ax = axes[0]
         srt = np.argsort(np.nan_to_num(score))
+        # lochNESS is bounded below by -1 (a neighbourhood with none of the
+        # perturbation) but unbounded above, and the informative values are a
+        # long thin tail: on the demo lane SALL4 runs to +47 while the 99th
+        # percentile is 4.5. A symmetric linear scale would therefore saturate
+        # the very cells the figure exists to show — half of SALL4's own cells
+        # sat above the cap. A symlog scale keeps the whole range visible.
+        vmax = float(np.nanmax(score[ok])) if ok.any() else 1.0
+        norm = _lochness_norm(vmax)
         sc_ = ax.scatter(coords[srt, 0], coords[srt, 1], s=4,
                          c=np.nan_to_num(score[srt]), cmap="RdBu_r",
-                         vmin=-lim, vmax=lim, linewidths=0, rasterized=True)
-        plt.colorbar(sc_, ax=ax, shrink=0.78, label="lochNESS")
+                         norm=norm, linewidths=0, rasterized=True)
+        cbar = plt.colorbar(sc_, ax=ax, shrink=0.78, label="lochNESS (symlog)")
+        cbar.ax.tick_params(labelsize=7)
         ax.set_title(f"{gene}: neighbourhood enrichment", fontsize=10)
         ax.set_xticks([])
         ax.set_yticks([])
@@ -1666,17 +1713,22 @@ def plot_lochness(expr, results, reg: FigureRegistry, cfg: Config) -> None:
         ax = axes[1]
         ax.scatter(coords[~own, 0], coords[~own, 1], s=3, color="#e2e8f0",
                    linewidths=0, rasterized=True, label="other cells")
-        ax.scatter(coords[own, 0], coords[own, 1], s=12, color="#c53030",
-                   linewidths=0.2, edgecolors="#2d3748", rasterized=True,
+        ax.scatter(coords[own, 0], coords[own, 1], s=14, color="#c53030",
+                   linewidths=0.3, edgecolors="#2d3748", rasterized=True,
                    label=f"{gene} cells")
-        ax.set_title(f"where the {int(own.sum()):,} {gene} cells actually are",
-                     fontsize=10)
+        # Label the clusters, so a reader can tell which blob the summary table
+        # means by "top cluster" instead of having to guess.
+        _label_clusters(ax, expr, coords, highlight=str(row.get("top_cluster", "")))
+        ax.set_title(
+            f"where the {int(own.sum()):,} {gene} cells actually are "
+            f"(top cluster {row.get('top_cluster', '?')} highlighted)",
+            fontsize=10,
+        )
         ax.set_xticks([])
         ax.set_yticks([])
         ax.legend(fontsize=7, frameon=False, loc="best", markerscale=2)
         sns.despine(ax=ax, left=True, bottom=True)
 
-        row = summary[summary["target_gene"] == gene].iloc[0]
         fig.tight_layout()
         reg.save(
             fig,

@@ -984,6 +984,27 @@ def test_lochness_detects_a_planted_neighbourhood():
     assert score[30:].mean() < -0.9, "outside it should be ~-1"
 
 
+def test_lochness_colour_scale_does_not_clip_the_tail():
+    """The lochNESS colour scale must span the real range, not a percentile.
+
+    The score is bounded below by -1 but unbounded above, and the signal lives
+    in a thin upper tail: on the demo lane SALL4 reaches +47 while the 99th
+    percentile is 4.5. Capping at a percentile painted half of SALL4's own
+    cells the same saturated colour — flattening exactly what the figure is
+    for — so the scale is symlog over the full range instead.
+    """
+    from perturbseq_pipeline.plots import _lochness_norm
+
+    norm = _lochness_norm(46.6)
+    assert norm.vmax >= 46.6, "the largest score must be inside the scale"
+    assert norm.vmin <= -1.0, "the -1 floor must be inside the scale"
+    # Distinct extreme values must map to distinct colours rather than both
+    # saturating at the top.
+    assert norm(46.6) > norm(10.0) > norm(4.5), "tail values must stay separable"
+    # Near zero the mapping stays linear and symmetric.
+    assert norm(0.0) == pytest.approx(0.5, abs=1e-6)
+
+
 def test_lochness_end_to_end_outputs(mtx_run):
     summary = pd.read_csv(mtx_run.outdir / "tables" / "lochness.csv")
     assert len(summary) > 0
