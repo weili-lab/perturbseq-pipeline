@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import anndata as ad
 import numpy as np
@@ -218,7 +218,11 @@ def _load_h5ad(cfg: Config) -> LoadedData:
         return LoadedData(expr, guides, "matrix", lanes)
 
     if cfg.input.guide_table:
-        labels = read_guide_table(cfg, adata.obs_names)
+        labels = read_guide_table(
+            cfg,
+            adata.obs_names,
+            adata.obs[LANE_KEY].astype(str) if LANE_KEY in adata.obs else None,
+        )
         adata.obs[RAW_GUIDE_LABEL] = labels.to_numpy()
         _ensure_counts_layer(adata)
         return LoadedData(adata, None, "obs_label", lanes)
@@ -448,7 +452,9 @@ def attach_sample_metadata(
     return adata
 
 
-def read_guide_table(cfg: Config, obs_names: pd.Index) -> pd.Series:
+def read_guide_table(
+    cfg: Config, obs_names: pd.Index, lanes: Optional[Sequence[str]] = None
+) -> pd.Series:
     """Resolve a barcode -> guide table into one label per cell.
 
     This is the layout used by PS_python's demo (``BARCODE_10x_Merged.txt``):
@@ -477,11 +483,18 @@ def read_guide_table(cfg: Config, obs_names: pd.Index) -> pd.Series:
                 "input.guide_table_cell_column / _gene_column to match."
             )
 
-    barcodes = table[cell_col].astype(str)
-    if icfg.guide_table_strip_prefix:
-        # Library prefixes such as 'S1L1_AAACCC...-1' -> 'AAACCC...-1'.
-        barcodes = barcodes.str.rsplit("_", n=1).str[-1]
-    table = table.assign(_barcode=barcodes)
+    raw_cells = table[cell_col].astype(str)
+    stripped = (
+        raw_cells.str.rsplit("_", n=1).str[-1]
+        if icfg.guide_table_strip_prefix
+        else raw_cells
+    )
+    # Group on the FULL cell id. The same 10x barcode legitimately occurs in
+    # every lane, so grouping on the prefix-stripped barcode would merge one
+    # cell per lane into a single pseudo-cell and make them all look like
+    # multiplets. Stripped forms are only used as a matching fallback below,
+    # and only when they are unambiguous.
+    table = table.assign(_cell=raw_cells, _stripped=stripped)
 
     count_col = icfg.guide_table_count_column
     has_counts = bool(count_col) and count_col in table.columns
@@ -490,34 +503,69 @@ def read_guide_table(cfg: Config, obs_names: pd.Index) -> pd.Series:
     labels: Dict[str, str] = {}
     if has_counts:
         table = table.sort_values(count_col, ascending=False)
-        for barcode, rows in table.groupby("_barcode", sort=False):
+        for cell_id, rows in table.groupby("_cell", sort=False):
             counts = rows[count_col].to_numpy(dtype=float)
             top = float(counts[0])
             second = float(counts[1]) if len(counts) > 1 else 0.0
             if top < max(gcfg.min_umi, 1):
-                labels[barcode] = gcfg.unassigned_label
+                labels[cell_id] = gcfg.unassigned_label
             elif top > gcfg.dominance_ratio * second:
-                labels[barcode] = str(rows.iloc[0][gene_col])
+                labels[cell_id] = str(rows.iloc[0][gene_col])
             else:
-                labels[barcode] = gcfg.ambiguous_label
+                labels[cell_id] = gcfg.ambiguous_label
     else:
         logger.warning(
             "input.guide_table has no %r column; cells with more than one guide "
             "are marked ambiguous rather than resolved by count.",
             count_col,
         )
-        for barcode, rows in table.groupby("_barcode", sort=False):
+        for cell_id, rows in table.groupby("_cell", sort=False):
             genes = set(rows[gene_col].astype(str))
-            labels[barcode] = genes.pop() if len(genes) == 1 else gcfg.ambiguous_label
+            labels[cell_id] = genes.pop() if len(genes) == 1 else gcfg.ambiguous_label
 
-    out = pd.Series(
-        [labels.get(str(b), gcfg.unassigned_label) for b in obs_names], index=obs_names
-    )
+    # Add stripped-form keys only where they are unique, so a fallback match can
+    # never silently pick the wrong lane's cell.
+    counts_per_stripped = table.groupby("_stripped")["_cell"].nunique()
+    unique_stripped = set(counts_per_stripped[counts_per_stripped == 1].index)
+    for cell_id, strip in table[["_cell", "_stripped"]].drop_duplicates().itertuples(index=False):
+        if strip in unique_stripped and strip not in labels:
+            labels[strip] = labels[cell_id]
+
+    # Barcodes are spelled differently on the two sides: a table carries a
+    # library prefix ('S1L1_AAACCC-1') while ``sc.concat`` appends a lane suffix
+    # to the matrix ('AAACCC-1-S1L1'). Both spellings, and the bare barcode, are
+    # tried so a table written by this pipeline reads back into the same cells.
+    if lanes is not None:
+        lane_values = [str(x) for x in lanes]
+    else:
+        lane_values = [None] * len(obs_names)
+
+    def _candidates(name: str, lane: Optional[str]):
+        yield name
+        if lane:
+            yield f"{lane}_{name}"
+            if name.endswith(f"-{lane}"):
+                base = name[: -(len(lane) + 1)]
+                yield base
+                yield f"{lane}_{base}"
+        if "_" in name:
+            yield name.rsplit("_", 1)[-1]
+
+    resolved = []
+    for name, lane in zip(obs_names, lane_values):
+        label = gcfg.unassigned_label
+        for key in _candidates(str(name), lane):
+            if key in labels:
+                label = labels[key]
+                break
+        resolved.append(label)
+
+    out = pd.Series(resolved, index=obs_names)
     matched = int((out != gcfg.unassigned_label).sum())
     if matched == 0:
         raise ValueError(
             f"No barcode in {path} matched the matrix. Example matrix barcode: "
-            f"{obs_names[0]!r}; example table barcode: {barcodes.iloc[0]!r}. "
+            f"{obs_names[0]!r}; example table barcode: {raw_cells.iloc[0]!r}. "
             "Check input.guide_table_strip_prefix."
         )
     logger.info(
@@ -527,6 +575,102 @@ def read_guide_table(cfg: Config, obs_names: pd.Index) -> pd.Series:
         path.name,
     )
     return out
+
+
+def write_guide_table(
+    guides: ad.AnnData, expr: ad.AnnData, cfg: Config, path: Path
+) -> Optional[Path]:
+    """Export the guide count matrix as a long barcode -> guide table.
+
+    This reproduces the layout of PS_python's ``BARCODE_10x_Merged.txt``, which
+    is exactly the guide count matrix in long form thresholded at
+    ``output.guide_table_min_umi`` UMIs (verified against the demo lane: the
+    per-cell totals and guide counts match at 100% for a threshold of 3).
+    Generating it here means the file is reproducible from the matrix instead of
+    being a hand-maintained side product.
+
+    Two things differ deliberately from the existing file:
+
+    * the ``gene`` column uses the pipeline's target parser, so guides whose
+      names carry no underscore (``CD81.2``) collapse to their target
+      (``CD81``) rather than being kept as separate targets;
+    * an ``assignment`` column carries the pipeline's own per-cell call, so a
+      consumer gets the same dominance rule used everywhere else instead of
+      having to re-derive one from the raw rows.
+
+    Rows are written with the highest-count guide **last** within each cell, so
+    that even a naive "last row wins" reader lands on the dominant guide.
+    """
+    from .guides import OBS_TARGET, parse_target_genes
+
+    if not cfg.output.write_guide_table or guides is None:
+        return None
+
+    from scipy import sparse
+
+    X = guides.layers["counts"] if "counts" in guides.layers else guides.X
+    X = sparse.csr_matrix(X)
+    min_umi = max(int(cfg.output.guide_table_min_umi), 1)
+    X.data[X.data < min_umi] = 0
+    X.eliminate_zeros()
+    if X.nnz == 0:
+        logger.warning("No guide counts survive the %d-UMI threshold", min_umi)
+        return None
+
+    coo = X.tocoo()
+    guide_ids = guides.var_names.to_numpy().astype(str)
+    targets = parse_target_genes(guide_ids, cfg.guides)
+
+    barcodes = guides.obs_names.to_numpy().astype(str)
+    if LANE_KEY in guides.obs.columns:
+        lanes = guides.obs[LANE_KEY].astype(str).to_numpy()
+        # ``sc.concat`` appends '-<lane>' to make barcodes unique across lanes.
+        # Strip it before re-prefixing, so the result is '<lane>_<barcode>' as
+        # in PS_python's file rather than a doubled-up identifier.
+        stripped = np.array(
+            [
+                b[: -(len(l) + 1)] if b.endswith(f"-{l}") else b
+                for b, l in zip(barcodes, lanes)
+            ]
+        )
+        cells = np.array(
+            [f"{l}_{b}" for l, b in zip(lanes[coo.row], stripped[coo.row])]
+        )
+    else:
+        cells = barcodes[coo.row]
+
+    counts = coo.data.astype(int)
+    table = pd.DataFrame(
+        {
+            "cell": cells,
+            "barcode": guide_ids[coo.col],
+            "sgrna": guide_ids[coo.col],
+            "gene": targets[coo.col],
+            "umi_count": counts,
+        }
+    )
+
+    assignment = (
+        expr.obs[OBS_TARGET].astype(str).reindex(guides.obs_names).to_numpy()
+        if OBS_TARGET in expr.obs.columns
+        else np.array(["NA"] * guides.n_obs)
+    )
+    table["assignment"] = assignment[coo.row]
+
+    # Highest count last within each cell (see docstring).
+    table = table.sort_values(["cell", "umi_count"], ascending=[True, True])
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(path, sep="\t", index=False)
+    logger.info(
+        "Wrote guide table %s: %d row(s) for %d cell(s), guides with >= %d UMIs",
+        path.name,
+        len(table),
+        table["cell"].nunique(),
+        min_umi,
+    )
+    return path
 
 
 def read_sample_metadata(path: str, key_column: str) -> pd.DataFrame:

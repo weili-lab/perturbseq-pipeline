@@ -218,6 +218,13 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
         guide_h5ad_path = io_mod.write_h5ad(guides[expr.obs_names].copy(), outdir / gname)
         guide_h5ad_path = io_mod.relocate_if_large(guide_h5ad_path, cfg)
 
+    guide_table_path: Optional[Path] = None
+    if guides is not None and cfg.output.write_guide_table:
+        tname = cfg.output.guide_table_name or f"{cfg.run.name}_guide_barcodes.txt"
+        guide_table_path = io_mod.write_guide_table(
+            guides[expr.obs_names].copy(), expr, cfg, outdir / tname
+        )
+
     # --- 9. report --------------------------------------------------------
     logger.info("=== Stage 9/9: building report ===")
     n_hits = len(results.hits) if not results.table.empty else 0
@@ -231,6 +238,8 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     }
     if guide_h5ad_path:
         outputs["Guide count h5ad"] = str(guide_h5ad_path)
+    if guide_table_path:
+        outputs["Guide barcode table"] = str(guide_table_path)
     archive_name = cfg.output.archive_name or f"{cfg.run.name}_results.tar.gz"
     if cfg.output.archive:
         outputs["Results archive"] = str(outdir / archive_name)

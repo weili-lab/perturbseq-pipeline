@@ -569,6 +569,49 @@ def test_ps_scores_land_in_obs(mtx_run):
 
 
 @pertps_required
+def test_ps_reports_a_control_baseline(mtx_run):
+    """Every knockdown percentage needs the control's own rate beside it."""
+    summary = pd.read_csv(mtx_run.outdir / "tables" / "ps_score.csv")
+    for col in ("pct_controls_called_kd", "net_pct_kd", "expression_cut"):
+        assert col in summary.columns
+    net = summary["pct_successful_kd"] - summary["pct_controls_called_kd"]
+    assert np.allclose(net, summary["net_pct_kd"], atol=0.01)
+
+
+@pertps_required
+def test_default_expression_cut_is_not_degenerate(mtx_run):
+    """The mean cut must not collapse to zero the way the median does.
+
+    Single-cell counts are zero-inflated, so a control median of 0 turns "low
+    expression" into "exactly zero" and makes the quadrant split meaningless.
+    """
+    summary = pd.read_csv(mtx_run.outdir / "tables" / "ps_score.csv")
+    assert (summary["expression_cut_method"] == "mean").all()
+    assert (summary["expression_cut"] > 0).any(), "mean cut should not be all zeros"
+
+
+def test_expression_cut_methods_are_selectable():
+    from perturbseq_pipeline.config import Config
+    from perturbseq_pipeline.ps_score import _expression_cut
+
+    ref = pd.Series([0.0, 0.0, 0.0, 1.0, 3.0])  # zero-inflated, median 0
+    cfg = Config()
+    cfg.ps_score.expression_cut = "median"
+    assert _expression_cut(ref, cfg.ps_score) == 0.0
+    cfg.ps_score.expression_cut = "mean"
+    assert _expression_cut(ref, cfg.ps_score) == pytest.approx(0.8)
+    cfg.ps_score.expression_cut = "quantile"
+    cfg.ps_score.expression_cut_quantile = 0.75
+    assert _expression_cut(ref, cfg.ps_score) == pytest.approx(1.0)
+
+    with pytest.raises(ValueError, match="expression_cut"):
+        bad = Config.from_dict(
+            {"input": {"h5ad": "x"}, "ps_score": {"expression_cut": "nonsense"}}
+        )
+        bad.validate()
+
+
+@pertps_required
 def test_ps_figures_cover_every_scored_target(mtx_run):
     summary = pd.read_csv(mtx_run.outdir / "tables" / "ps_score.csv")
     figs = list((mtx_run.figures_dir / "ps_score" / "per_target").glob("*.png"))
@@ -678,6 +721,72 @@ def test_guide_table_input_resolves_multiplets_by_count(synthetic, tmp_path):
     assert set(KD_TARGETS) <= targets
     # 'Non-Targeting' must be recognised as the control population.
     assert (result.adata.obs["perturbation_class"] == "non-targeting").sum() > 0
+
+
+def test_guide_table_is_written_and_matches_the_matrix(mtx_run):
+    """The exported table must be exactly the matrix above the UMI threshold."""
+    import scanpy as sc
+
+    table_path = next(mtx_run.outdir.glob("*_guide_barcodes.txt"))
+    table = pd.read_csv(table_path, sep="\t")
+    for col in ("cell", "barcode", "sgrna", "gene", "umi_count", "assignment"):
+        assert col in table.columns, f"missing column {col}"
+
+    assert table["umi_count"].min() >= 3, "entries below the threshold must be dropped"
+
+    guides = sc.read_h5ad(mtx_run.guide_h5ad)
+    X = guides.layers["counts"] if "counts" in guides.layers else guides.X
+    dense = X.toarray() if sp.issparse(X) else np.asarray(X)
+    expected_rows = int((dense >= 3).sum())
+    assert len(table) == expected_rows, "one row per matrix entry above threshold"
+    assert int(table["umi_count"].sum()) == int(dense[dense >= 3].sum())
+
+
+def test_guide_table_puts_the_dominant_guide_last(mtx_run):
+    """So a naive 'last row wins' reader still lands on the top guide."""
+    table = pd.read_csv(next(mtx_run.outdir.glob("*_guide_barcodes.txt")), sep="\t")
+    multi = table.groupby("cell").filter(lambda g: len(g) > 1)
+    assert len(multi) > 0, "test needs cells with several guides"
+    last = multi.groupby("cell").tail(1).set_index("cell")["umi_count"]
+    top = multi.groupby("cell")["umi_count"].max()
+    assert (last == top.reindex(last.index)).all()
+
+
+def test_guide_table_round_trips_through_the_reader(mtx_run, synthetic, tmp_path):
+    """Writing then re-reading the table must reproduce the assignments.
+
+    This is what keeps the pipeline and any consumer of the file — PS_python
+    included — on the same per-cell calls.
+    """
+    import scanpy as sc
+
+    from perturbseq_pipeline.cli import run_pipeline
+
+    table_path = next(mtx_run.outdir.glob("*_guide_barcodes.txt"))
+    expr = sc.read_h5ad(mtx_run.h5ad)
+    original = expr.obs["target_gene"].astype(str)
+
+    # Feed the written table back in as the sole source of guide identity.
+    plain = expr.copy()
+    for key in list(plain.obs.columns):
+        if key.startswith(("ps_", "target_gene", "guide_id", "perturbation_class")):
+            del plain.obs[key]
+    path = tmp_path / "expr_for_roundtrip.h5ad"
+    plain.write_h5ad(path)
+
+    cfg = _base_config(synthetic, tmp_path / "run_roundtrip")
+    cfg.input.mtx_dirs = None
+    cfg.input.h5ad = str(path)
+    cfg.input.guide_table = str(table_path)
+    cfg.input.counts_layer = "counts"
+    cfg.metadata.file = None
+    cfg.ps_score.enabled = False
+    result = run_pipeline(cfg)
+
+    reloaded = result.adata.obs["target_gene"].astype(str)
+    shared = original.index.intersection(reloaded.index)
+    agree = (original.loc[shared] == reloaded.loc[shared]).mean()
+    assert agree > 0.99, f"round-trip changed {100 * (1 - agree):.1f}% of assignments"
 
 
 def test_guide_table_strips_library_prefixes(tmp_path):

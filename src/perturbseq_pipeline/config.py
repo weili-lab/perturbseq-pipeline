@@ -286,6 +286,15 @@ class PSScoreConfig:
     #: Scores at or above this count as "high"; the vertical cut of the quadrant
     #: plot. 0.5 matches the PS_python demo.
     ps_threshold: float = 0.5
+    #: How the horizontal (expression) cut is placed within the control cells.
+    #: ``mean`` is the default rather than PS_python's ``median`` because
+    #: single-cell counts are zero-inflated: on the demo lane the control median
+    #: is exactly 0 for 35 of 46 targets, which collapses "low expression" into
+    #: "exactly zero". The mean is never degenerate there and moves the net
+    #: signal by ~0.1 percentage points.
+    expression_cut: str = "mean"  # mean | median | quantile
+    #: Quantile of control expression used when ``expression_cut`` is quantile.
+    expression_cut_quantile: float = 0.75
     min_cells_per_target: int = 10
     min_control_cells: int = 10
     #: Number of targets whose quadrant plots are embedded in the report; every
@@ -333,6 +342,14 @@ class OutputConfig:
     archive_exclude: List[str] = field(
         default_factory=lambda: ["*.h5ad", "*.h5", "*.loom", "*.tar.gz"]
     )
+    #: Write the guide count matrix as a long barcode -> guide table, the
+    #: format PS_python consumes. Generated from the matrix itself, so it is
+    #: reproducible rather than a hand-maintained side file.
+    write_guide_table: bool = True
+    guide_table_name: Optional[str] = None
+    #: Guides below this many UMIs in a cell are omitted, matching how the
+    #: existing BARCODE_10x_Merged.txt was produced.
+    guide_table_min_umi: int = 3
 
 
 @dataclass
@@ -452,6 +469,14 @@ class Config:
             )
         if not 0 < self.enrichment.fdr_alpha < 1:
             raise ValueError("enrichment.fdr_alpha must be in (0, 1)")
+
+        if self.ps_score.expression_cut not in ("mean", "median", "quantile"):
+            raise ValueError(
+                "ps_score.expression_cut must be 'mean', 'median' or 'quantile' "
+                f"(got {self.ps_score.expression_cut!r})"
+            )
+        if not 0 < self.ps_score.expression_cut_quantile < 1:
+            raise ValueError("ps_score.expression_cut_quantile must be in (0, 1)")
 
     # -- convenience --------------------------------------------------------
 

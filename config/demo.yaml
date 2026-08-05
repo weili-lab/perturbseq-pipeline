@@ -73,6 +73,16 @@ enrichment:
   permutations: 1000
   top_n_report: 12
 
+ps_score:
+  # Per-cell perturbation-response scores via PS_python (optional extra).
+  enabled: true
+  ps_threshold: 0.5
+  # Control mean, not median: single-cell counts are zero-inflated and the
+  # control median is exactly 0 for most targets, which collapses
+  # "low expression" into "exactly zero".
+  expression_cut: mean          # mean | median | quantile
+  top_n_report: 12
+
 report:
   title: "Perturb-seq demo report — ESC TF screen (S1 lane 1)"
   embed_figures: true
@@ -85,6 +95,10 @@ output:
   archive: true
   archive_name: null            # defaults to <run.name>_results.tar.gz
   archive_exclude: ["*.h5ad", "*.h5", "*.loom", "*.tar.gz"]
+  # Export the guide count matrix as a long barcode -> guide table, the format
+  # PS_python consumes. Verified to reproduce BARCODE_10x_Merged.txt exactly.
+  write_guide_table: true
+  guide_table_min_umi: 3
   # Large outputs are moved here instead of being left next to the repo.
   # On Colab this is the shared Drive folder; set to null to keep them local.
   large_file_dir: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/pipeline"

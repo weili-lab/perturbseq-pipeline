@@ -311,6 +311,18 @@ def compute_ps_scores(expr: ad.AnnData, cfg: Config) -> Optional[PSResults]:
     )
 
 
+def _expression_cut(reference: pd.Series, pcfg) -> float:
+    """Place the horizontal quadrant cut inside the control distribution."""
+    values = np.asarray(reference, dtype=float)
+    if values.size == 0:
+        return 0.0
+    if pcfg.expression_cut == "median":
+        return float(np.median(values))
+    if pcfg.expression_cut == "quantile":
+        return float(np.quantile(values, pcfg.expression_cut_quantile))
+    return float(np.mean(values))
+
+
 def _pct_control_expressing(expr: ad.AnnData, gene: str) -> float:
     """Percent of non-targeting control cells with non-zero expression."""
     from scipy import sparse
@@ -349,10 +361,13 @@ def _summarize_target(expr: ad.AnnData, gene: str, series: pd.Series, cfg: Confi
     if int(is_target.sum()) == 0:
         return None, None, float("nan")
 
-    # The horizontal cut is the control population's median expression: "low"
-    # means below what an unperturbed cell typically shows.
+    # The horizontal cut sits inside the control population: "low" means below
+    # what an unperturbed cell typically shows. The mean is the default rather
+    # than the median because single-cell counts are zero-inflated and the
+    # median collapses to exactly 0 for most targets.
     ctrl_expr = expression.loc[cells][is_ctrl]
-    cut = float(np.median(ctrl_expr)) if len(ctrl_expr) else float(np.median(expression))
+    reference = ctrl_expr if len(ctrl_expr) else expression
+    cut = _expression_cut(reference, pcfg)
 
     ps = series.loc[cells]
     ex = expression.loc[cells]
@@ -365,7 +380,12 @@ def _summarize_target(expr: ad.AnnData, gene: str, series: pd.Series, cfg: Confi
     quad[~high_ps & high_expr] = QUADRANT_NONRESPONDER
 
     tq = quad[is_target]
+    cq = quad[is_ctrl]
     n = len(tq)
+    # The same classification applied to control cells. Any cut can be argued
+    # over; reporting what fraction of *controls* it would call knocked down
+    # makes the number auditable and turns the headline into a net effect.
+    ctrl_kd = float(100 * (cq == QUADRANT_KD).mean()) if len(cq) else float("nan")
     row = {
         "target_gene": gene,
         "n_perturbed_cells": int(n),
@@ -377,7 +397,12 @@ def _summarize_target(expr: ad.AnnData, gene: str, series: pd.Series, cfg: Confi
         "pct_escaper": float(100 * (tq == QUADRANT_ESCAPER).mean()),
         "pct_non_responder": float(100 * (tq == QUADRANT_NONRESPONDER).mean()),
         "pct_low_signal": float(100 * (tq == QUADRANT_LOW).mean()),
-        "control_median_expression": cut,
+        "pct_controls_called_kd": ctrl_kd,
+        "net_pct_kd": float(100 * (tq == QUADRANT_KD).mean() - ctrl_kd)
+        if len(cq)
+        else float("nan"),
+        "expression_cut": cut,
+        "expression_cut_method": cfg.ps_score.expression_cut,
     }
     return row, quad, cut
 

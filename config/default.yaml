@@ -102,6 +102,8 @@ ps_score:
   top_n_biomarkers: 100
   scale_factor: 3.0
   ps_threshold: 0.5
+  expression_cut: mean
+  expression_cut_quantile: 0.75
   min_cells_per_target: 10
   min_control_cells: 10
   top_n_report: 12
@@ -125,3 +127,6 @@ output:
   - '*.h5'
   - '*.loom'
   - '*.tar.gz'
+  write_guide_table: true
+  guide_table_name: null
+  guide_table_min_umi: 3
