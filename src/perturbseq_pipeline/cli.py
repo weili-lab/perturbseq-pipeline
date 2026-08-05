@@ -33,6 +33,9 @@ class PipelineResult:
     report: Path
     h5ad: Path
     guide_h5ad: Optional[Path]
+    #: The pre-filter object (every QC-passing cell), written only under
+    #: ``cluster.assigned_only`` with ``output.write_unfiltered_h5ad``.
+    unfiltered_h5ad: Optional[Path] = None
     #: ``.tar.gz`` bundle of the run outputs (None when archiving is disabled).
     archive: Optional[Path] = None
     tables: Dict[str, Path] = field(default_factory=dict)
@@ -83,6 +86,15 @@ def setup_logging(outdir: Path, verbose: bool = False) -> Path:
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
+
+
+def _assigned_singlet_mask(expr):
+    """Boolean mask of guide-assigned singlets (``targeting`` / ``non-targeting``)."""
+    from .guides import CLASS_NTC, CLASS_TARGETING, OBS_CLASS
+
+    if OBS_CLASS not in expr.obs.columns:
+        return None
+    return expr.obs[OBS_CLASS].astype(str).isin([CLASS_TARGETING, CLASS_NTC]).to_numpy()
 
 
 def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
@@ -150,6 +162,55 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     # --- 4. clustering ----------------------------------------------------
     logger.info("=== Stage 4/10: normalization, embedding, clustering ===")
     expr = cluster_mod.normalize(expr, cfg)
+
+    # With cluster.assigned_only the run embeds twice. The first pass covers
+    # every QC-passing cell: it is what the ambiguous and unassigned cells show
+    # up on, and it is written as its own .h5ad. The analysis then re-embeds the
+    # guide-assigned singlets alone, so multiplets shape neither the HVG/PCA
+    # space nor the clusters. Normalization is per-cell, so it is not repeated.
+    unfiltered_h5ad_path: Optional[Path] = None
+    singlets = _assigned_singlet_mask(expr) if cfg.cluster.assigned_only else None
+    if singlets is not None and singlets.all():
+        singlets = None  # every cell is a singlet: one pass is enough
+    if singlets is not None and not singlets.any():
+        raise ValueError(
+            "cluster.assigned_only left no guide-assigned singlets to cluster; "
+            "loosen guides.min_umi / guides.dominance_ratio / guides.max_second_umi."
+        )
+
+    if singlets is not None:
+        n_all, n_keep = expr.n_obs, int(singlets.sum())
+        logger.info(
+            "cluster.assigned_only: embedding all %d QC-passing cells first, then "
+            "re-embedding the %d guide-assigned singlets for the analysis "
+            "(%d ambiguous/unassigned cells are excluded from the analysis only).",
+            n_all, n_keep, n_all - n_keep,
+        )
+        expr = cluster_mod.embed_and_cluster(expr, cfg)
+        tables["clusters_all_cells"] = cluster_mod.cluster_summary(expr)
+        plots_mod.plot_clustering(
+            expr, registry, cfg,
+            name_prefix="all_cells_",
+            section=plots_mod.SECTION_GUIDES,
+            label=" — all cells, before guide filtering",
+        )
+        if cfg.output.write_unfiltered_h5ad:
+            uname = cfg.output.unfiltered_h5ad_name or (
+                Path(cfg.output.h5ad_name).stem + "_all_cells.h5ad"
+            )
+            unfiltered_h5ad_path = io_mod.write_h5ad(
+                io_mod.merge_guides_into_expr(expr.copy(), guides, cfg), outdir / uname
+            )
+            unfiltered_h5ad_path = io_mod.relocate_if_large(unfiltered_h5ad_path, cfg)
+        warnings.append(
+            f"cluster.assigned_only: the analysis below covers the {n_keep:,} "
+            f"guide-assigned singlets. The {n_all - n_keep:,} ambiguous/unassigned "
+            f"cells are in the all-cells figures and .h5ad; their cluster labels "
+            f"come from a separate embedding and are not comparable to the ones used "
+            f"in the analysis."
+        )
+        expr = cluster_mod.reset_embedding(expr[singlets].copy())
+
     expr = cluster_mod.embed_and_cluster(expr, cfg)
     tables["clusters"] = cluster_mod.cluster_summary(expr)
     plots_mod.plot_clustering(expr, registry, cfg)
@@ -265,6 +326,8 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
         "Tables": str(tabledir),
         "Log": str(outdir / "logs" / "run.log"),
     }
+    if unfiltered_h5ad_path:
+        outputs["All-cells h5ad (before guide filtering)"] = str(unfiltered_h5ad_path)
     if guide_h5ad_path:
         outputs["Guide count h5ad"] = str(guide_h5ad_path)
     if guide_table_path:
@@ -316,6 +379,7 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
         report=report_path,
         h5ad=h5ad_path,
         guide_h5ad=guide_h5ad_path,
+        unfiltered_h5ad=unfiltered_h5ad_path,
         archive=archive_path,
         tables=table_paths,
         figures_dir=registry.figdir,

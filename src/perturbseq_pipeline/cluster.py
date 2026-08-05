@@ -121,6 +121,30 @@ def embed_and_cluster(expr: ad.AnnData, cfg: Config) -> ad.AnnData:
     return expr
 
 
+def reset_embedding(expr: ad.AnnData) -> ad.AnnData:
+    """Drop everything :func:`embed_and_cluster` produced, in place.
+
+    Used when a subset of an already-embedded object is re-embedded on its own
+    (``cluster.assigned_only``): the inherited PCA, neighbor graph, UMAP and HVG
+    flags describe the *previous* cell set, and leaving them behind would either
+    be silently reused (``X_pca_harmony`` as ``use_rep``) or written to the
+    output as stale coordinates. The ``counts``/``lognorm`` layers are per-cell
+    and stay valid, so they are kept.
+    """
+    for key in ("X_pca", "X_pca_harmony", "X_umap"):
+        if key in expr.obsm:
+            del expr.obsm[key]
+    for key in list(expr.obsp.keys()):
+        del expr.obsp[key]
+    for key in ("pca", "neighbors", "umap", CLUSTER_KEY, f"{CLUSTER_KEY}_colors"):
+        expr.uns.pop(key, None)
+    if "highly_variable" in expr.var.columns:
+        del expr.var["highly_variable"]
+    if CLUSTER_KEY in expr.obs.columns:
+        del expr.obs[CLUSTER_KEY]
+    return expr
+
+
 def _run_harmony(expr: ad.AnnData, cfg: Config) -> Optional[str]:
     """Batch-correct the PCA embedding with Harmony; returns the new rep key."""
     key = cfg.cluster.batch_key

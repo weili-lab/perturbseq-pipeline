@@ -199,6 +199,19 @@ class ClusterConfig:
     batch_key: Optional[str] = None
     regress_out: List[str] = field(default_factory=list)
     scale_max_value: Optional[float] = 10.0
+    #: Cluster (and run every downstream analysis) on guide-assigned singlets
+    #: only — cells whose ``perturbation_class`` is ``targeting`` or
+    #: ``non-targeting``. Droplet multiplets flagged ``ambiguous`` by the
+    #: ``guides.max_second_umi`` gate otherwise survive QC and fragment the
+    #: embedding into many small clusters (they are excluded from enrichment /
+    #: perturbation / lochNESS anyway).
+    #:
+    #: Nothing is discarded: the run embeds and clusters *all* QC-passing cells
+    #: first, writes that object as its own ``.h5ad`` with its own UMAPs (where
+    #: the ambiguous and unassigned cells stay visible), and only then filters
+    #: to the singlets and re-embeds them for the analysis. See
+    #: ``output.write_unfiltered_h5ad``. Off by default.
+    assigned_only: bool = False
 
 
 @dataclass
@@ -398,6 +411,14 @@ class OutputConfig:
 
     h5ad_name: str = "processed.h5ad"
     report_name: str = "report.html"
+    #: With ``cluster.assigned_only``, also write the pre-filter object — every
+    #: QC-passing cell, with its own embedding and clustering — beside the
+    #: analysed one. That is where ambiguous/unassigned cells remain visible on
+    #: a UMAP. Ignored when ``cluster.assigned_only`` is false, since the single
+    #: processed ``.h5ad`` already holds every cell. Doubles the matrix storage.
+    write_unfiltered_h5ad: bool = True
+    #: Defaults to ``<h5ad_name stem>_all_cells.h5ad``.
+    unfiltered_h5ad_name: Optional[str] = None
     large_file_dir: Optional[str] = None
     large_file_threshold_mb: float = 50.0
     #: Store the guide count matrix inside the processed ``.h5ad`` rather than

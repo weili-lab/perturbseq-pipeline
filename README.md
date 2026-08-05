@@ -479,6 +479,22 @@ perturbation testing and from *both* control groups. So loosening
 populations. On the four-lane run that category holds 27,566 cells (25.4%),
 so the setting has real leverage over every downstream result.
 
+One place ambiguous cells still act is **clustering**, which by default runs on
+all QC-passing cells. Multiplets pass gene-expression QC and fragment the
+embedding into many small clusters (on M0_ch1, 123 instead of 37).
+
+`cluster.assigned_only: true` splits the run into two objects rather than
+discarding anything:
+
+| | Cells | Written as | Used for |
+|---|---|---|---|
+| all cells | every QC-passing cell | `<name>_all_cells.h5ad` | the `all_cells_*` UMAPs, where ambiguous/unassigned cells are visible |
+| analysed | guide-assigned singlets | `<name>.h5ad` | clustering, perturbation, enrichment, PS scores, lochNESS |
+
+Each is embedded independently and is internally complete, so **cluster labels
+do not carry across the two files**. Set `output.write_unfiltered_h5ad: false`
+to keep the figures but skip the extra (large) matrix.
+
 The same rule is applied when guides arrive as a barcode table
 (`input.guide_table`), reading the same two keys, so a run from a count matrix
 and a run from a barcode table produce identical per-cell calls.

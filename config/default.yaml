@@ -69,6 +69,11 @@ cluster:
   batch_key: null
   regress_out: []
   scale_max_value: 10.0
+  # Run the analysis on guide-assigned singlets only. All QC-passing cells are
+  # still embedded, clustered, plotted and written first (see
+  # output.write_unfiltered_h5ad); the singlets are then re-embedded on their
+  # own, so multiplets shape neither the PCA space nor the clusters.
+  assigned_only: false
 perturbation:
   controls:
   - ntc
@@ -133,6 +138,10 @@ report:
 output:
   h5ad_name: processed.h5ad
   report_name: report.html
+  # Only used with cluster.assigned_only: also write the pre-filter object (all
+  # QC-passing cells, own embedding) beside the analysed one. Doubles matrices.
+  write_unfiltered_h5ad: true
+  unfiltered_h5ad_name: null
   large_file_dir: null
   large_file_threshold_mb: 50.0
   merge_guides_into_h5ad: true

@@ -130,6 +130,36 @@ Library-size normalization → `log1p` → HVG selection (3,000 by default) →
 scaling → PCA (50 PCs) → optional Harmony on `cluster.batch_key` → neighbor
 graph → UMAP → Leiden (`flavor="igraph"`).
 
+### Clustering on assigned singlets (`cluster.assigned_only`)
+
+Clustering otherwise runs on every QC-passing cell, including the `ambiguous`
+droplet multiplets flagged by `guides.max_second_umi`. Those cells survive
+gene-expression QC (a multiplet is not low-quality, just two cells) and fragment
+the embedding into many small clusters — on M0_ch1, 123 clusters instead of 37.
+
+With `cluster.assigned_only: true` the run embeds **twice**:
+
+1. **All QC-passing cells** — normalization, HVG, PCA, optional Harmony, UMAP and
+   Leiden over everything. This produces the `all_cells_*` figures (including
+   `all_cells_umap_assignment_class`, where the ambiguous and unassigned cells
+   are visible) and is written as its own object,
+   `<h5ad_name>_all_cells.h5ad` (`output.write_unfiltered_h5ad`).
+2. **Guide-assigned singlets only** — the object is filtered to
+   `targeting`/`non-targeting` cells, the first embedding is discarded, and HVG
+   selection, PCA, Harmony, UMAP and Leiden are recomputed from scratch. Every
+   downstream stage (perturbation strength, cluster enrichment, PS scores,
+   lochNESS) runs on this object, and it is the processed `.h5ad`.
+
+Re-embedding rather than reusing the all-cell PCA matters: HVG selection and the
+principal components are themselves fit on the cells given to them, so a shared
+embedding would let multiplets shape the space that lochNESS and the cluster
+tests operate in. Normalization is per-cell and so is not repeated.
+
+Because the two objects are embedded independently, **their cluster labels are
+not comparable** — cluster 5 in the all-cells file has nothing to do with
+cluster 5 in the analysed file. The all-cells file is a QC and provenance
+artefact; the analysed file is the one to quote results from.
+
 The layer contract afterwards:
 
 | Slot | Contents |
