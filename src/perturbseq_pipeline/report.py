@@ -30,6 +30,7 @@ from .plots import (
     SECTION_PER_GENE,
     SECTION_PERTURBATION,
     SECTION_PS,
+    SECTION_PS_LDA,
     SECTION_PS_PER_TARGET,
     SECTION_QC,
     FigureRecord,
@@ -118,6 +119,7 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         "enrichment_per_target": reg.by_section(SECTION_ENRICH_PER_TARGET),
         "ps": reg.by_section(SECTION_PS),
         "ps_per_target": reg.by_section(SECTION_PS_PER_TARGET),
+        "ps_lda": reg.by_section(SECTION_PS_LDA),
     }
     extras = reg.extras(SECTION_PER_GENE)
     enrich_extras = reg.extras(SECTION_ENRICH_PER_TARGET)
@@ -188,10 +190,13 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "worst_escaper": summ.sort_values("pct_escaper").iloc[-1]["target_gene"],
             "worst_escaper_pct": f"{summ['pct_escaper'].max():.0f}",
             "n_skipped": int(len(ps.skipped)),
+            "has_lda": ps.lda_umap is not None,
+            "lda_note": ps.lda_note,
             "version": _pertps_version_or_none(),
         }
     ps_note = ps.note if ps is not None and ps.note else ""
     ps_extras = reg.extras(SECTION_PS_PER_TARGET)
+    ps_lda_extras = reg.extras(SECTION_PS_LDA)
 
     controls_described = " and ".join(CONTROL_LABELS[c] for c in res.controls_used)
     primary_fallback = res.primary_control != cfg.perturbation.primary_control
@@ -235,6 +240,11 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         ps_extras=ps_extras,
         ps_extra_names=[f"{r.name}.{cfg.report.figure_format}" for r in ps_extras],
         ps_per_target_dir=str(reg.figdir / SECTION_PS_PER_TARGET),
+        ps_lda_extras=ps_lda_extras,
+        ps_lda_extra_names=[
+            f"{r.name}.{cfg.report.figure_format}" for r in ps_lda_extras
+        ],
+        ps_lda_dir=str(reg.figdir / SECTION_PS_LDA),
         enrichment=enrichment_ctx,
         enrichment_extras=enrich_extras,
         enrichment_extra_names=[

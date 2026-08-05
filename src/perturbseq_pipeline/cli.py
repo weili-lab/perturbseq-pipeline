@@ -183,6 +183,12 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     ps_results = ps_mod.compute_ps_scores(expr, cfg)
     if ps_results is not None and not ps_results.summary.empty:
         expr = ps_mod.attach_scores(expr, ps_results)
+        if ps_results.lda_umap is not None:
+            expr.obsm["X_lda_umap"] = ps_results.lda_umap
+            if ps_results.lda_label is not None:
+                expr.obs["lda_label"] = pd.Categorical(
+                    ps_results.lda_label.astype(str)
+                )
         tables["ps_score"] = ps_results.summary
         if not ps_results.skipped.empty:
             tables["ps_skipped"] = ps_results.skipped
@@ -192,6 +198,7 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
         if not comparison.empty:
             tables["ps_vs_perturbation"] = comparison
         plots_mod.plot_ps_scores(expr, ps_results, results, registry, cfg)
+        plots_mod.plot_ps_lda(expr, ps_results, registry, cfg)
     elif ps_results is not None and ps_results.note:
         warnings.append(ps_results.note)
 

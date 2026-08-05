@@ -56,6 +56,7 @@ SECTION_ENRICHMENT = "enrichment"
 SECTION_ENRICH_PER_TARGET = "enrichment/per_target"
 SECTION_PS = "ps_score"
 SECTION_PS_PER_TARGET = "ps_score/per_target"
+SECTION_PS_LDA = "ps_score/lda"
 
 _CLASS_COLORS = {
     CLASS_TARGETING: "#2b6cb0",
@@ -1363,4 +1364,146 @@ def _plot_ps_quadrants(expr, results, reg: FigureRegistry, cfg: Config) -> None:
         "Wrote %d perturbation-score quadrant figures (%d shown in the report)",
         len(results.summary),
         min(top_n, len(results.summary)),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Supervised LDA embedding (PS_python's fixed-LDA map)
+# ---------------------------------------------------------------------------
+
+
+def plot_ps_lda(expr, results, reg: FigureRegistry, cfg: Config) -> None:
+    """PS scores on the supervised LDA embedding.
+
+    The section-2 UMAP is unsupervised and knows nothing about which guide a
+    cell carries, so a subtle phenotype can be invisible in it. This embedding
+    is trained on the perturbation labels, so its axes are chosen to separate
+    perturbations — the space in which the per-cell scores read most clearly.
+
+    One overview plus one figure per scored target, mirroring PS_python's
+    ``plots_fixed_lda/``.
+    """
+    from .ps_score import PS_PREFIX, QUADRANT_KD
+
+    if results is None or results.lda_umap is None or results.summary.empty:
+        return
+    coords = np.asarray(results.lda_umap, dtype=float)
+    placed = np.isfinite(coords).all(axis=1)
+    if placed.sum() < 10:
+        logger.warning("LDA embedding placed too few cells to plot")
+        return
+
+    labels = (
+        results.lda_label.astype(str).to_numpy()
+        if results.lda_label is not None
+        else np.full(expr.n_obs, "?", dtype=object)
+    )
+    targets = expr.obs[OBS_TARGET].astype(str).to_numpy()
+    n_targets = len(results.summary)
+
+    # --- overview: the whole map, coloured by perturbation ----------------
+    fig, ax = plt.subplots(figsize=(7.4, 5.6))
+    _scatter_umap(
+        ax,
+        coords[placed],
+        labels[placed],
+        True,
+        f"Supervised LDA embedding ({n_targets} targets + control)",
+        size=4,
+        legend=n_targets <= 24,
+    )
+    ax.set_xlabel("LDA-UMAP1", fontsize=8)
+    ax.set_ylabel("LDA-UMAP2", fontsize=8)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "ps_lda_overview",
+        SECTION_PS,
+        "Supervised LDA embedding",
+        "Linear discriminant analysis trained on the perturbation labels, then "
+        "embedded with UMAP. Unlike the unsupervised embedding in section 2, the "
+        "axes here are chosen to separate perturbations, so groups that overlap "
+        "there can resolve."
+        + ("" if n_targets <= 24 else " Legend omitted (too many targets)."),
+    )
+
+    # --- global summary: high-confidence knockdown cells -------------------
+    own = expr.obs["ps_score"].to_numpy(dtype=float) if "ps_score" in expr.obs else None
+    if own is not None:
+        thr = cfg.ps_score.lda_highlight_threshold
+        strong = placed & np.isfinite(own) & (own >= thr)
+        fig, ax = plt.subplots(figsize=(6.6, 5.4))
+        ax.scatter(coords[placed, 0], coords[placed, 1], s=4, color="#e2e8f0",
+                   linewidths=0, rasterized=True, label="all cells")
+        sc_ = ax.scatter(coords[strong, 0], coords[strong, 1], s=12, c=own[strong],
+                         cmap="viridis", vmin=thr, vmax=1.0, linewidths=0.2,
+                         edgecolors="#2d3748", rasterized=True)
+        plt.colorbar(sc_, ax=ax, shrink=0.75, label="perturbation score")
+        ax.set_title(
+            f"High-confidence responders (score >= {thr}): "
+            f"{int(strong.sum()):,} of {int(placed.sum()):,} cells",
+            fontsize=10,
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.legend(fontsize=7, frameon=False, loc="best", markerscale=3)
+        sns.despine(ax=ax, left=True, bottom=True)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            "ps_lda_high_confidence",
+            SECTION_PS,
+            "High-confidence responders on the LDA map",
+            f"Cells whose perturbation score reaches {thr}, coloured by score. "
+            "Where these concentrate is where the screen produced its clearest "
+            "phenotypes.",
+        )
+
+    # --- one per target ----------------------------------------------------
+    top_n = cfg.ps_score.top_n_report
+    for rank, gene in enumerate(results.summary["target_gene"]):
+        col = f"{PS_PREFIX}{gene}"
+        if col not in expr.obs.columns:
+            continue
+        score = expr.obs[col].to_numpy(dtype=float)
+        is_target = (targets == gene) & placed
+        if is_target.sum() == 0:
+            continue
+
+        fig, ax = plt.subplots(figsize=(6.4, 5.2))
+        bg = placed & ~is_target
+        ax.scatter(coords[bg, 0], coords[bg, 1], s=4, color="#e2e8f0", alpha=0.6,
+                   linewidths=0, rasterized=True, label="other cells")
+        order = np.argsort(np.nan_to_num(score[is_target]))
+        idx = np.where(is_target)[0][order]
+        sc_ = ax.scatter(coords[idx, 0], coords[idx, 1], s=18,
+                         c=np.nan_to_num(score[idx]), cmap="Blues", vmin=0, vmax=1,
+                         linewidths=0.3, edgecolors="#2d3748", rasterized=True)
+        plt.colorbar(sc_, ax=ax, shrink=0.75, label="perturbation score")
+
+        row = results.summary[results.summary["target_gene"] == gene].iloc[0]
+        ax.set_title(
+            f"{gene} on the LDA map (n={int(row['n_perturbed_cells']):,}, "
+            f"{row['pct_successful_kd']:.0f}% knocked down)",
+            fontsize=10,
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.legend(fontsize=7, frameon=False, loc="best", markerscale=3)
+        sns.despine(ax=ax, left=True, bottom=True)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            f"ps_lda_{gene}",
+            SECTION_PS_LDA,
+            f"{gene} on the LDA embedding",
+            f"Cells carrying {gene} guides, shaded by perturbation score, against "
+            "all other cells in grey. Darker cells respond more strongly; a tight "
+            "darker cluster means the perturbation drives a consistent state.",
+            in_report=rank < top_n,
+        )
+    logger.info(
+        "Wrote %d per-target LDA figures (%d shown in the report)",
+        n_targets,
+        min(top_n, n_targets),
     )

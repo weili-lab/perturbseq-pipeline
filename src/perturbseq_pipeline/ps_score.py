@@ -83,6 +83,12 @@ class PSResults:
     quadrants: Dict[str, pd.Series] = field(default_factory=dict)
     #: Control median expression used as the horizontal cut, per target.
     expression_cut: Dict[str, float] = field(default_factory=dict)
+    #: Supervised LDA embedding (cells x 2), aligned to ``expr.obs_names``.
+    lda_umap: Optional[np.ndarray] = None
+    #: Per-cell label used to train the LDA (target gene, ``NT`` or ``Other``).
+    lda_label: Optional[pd.Series] = None
+    #: Why the embedding is missing, when it is.
+    lda_note: str = ""
     skipped: pd.DataFrame = field(default_factory=pd.DataFrame)
     ps_threshold: float = 0.5
     #: Set when the stage ran but produced nothing usable.
@@ -292,6 +298,10 @@ def compute_ps_scores(expr: ad.AnnData, cfg: Config) -> Optional[PSResults]:
         .sort_values("pct_successful_kd", ascending=False)
         .reset_index(drop=True)
     )
+
+    lda_umap, lda_label, lda_note = _compute_lda_embedding(
+        analyzer, expr, list(summary["target_gene"]), cfg
+    )
     logger.info(
         "Perturbation scores: %d target(s) scored, median %.0f%% of perturbed "
         "cells classed as successful knockdown",
@@ -308,7 +318,65 @@ def compute_ps_scores(expr: ad.AnnData, cfg: Config) -> Optional[PSResults]:
         expression_cut=expression_cut,
         skipped=pd.DataFrame(skipped),
         ps_threshold=pcfg.ps_threshold,
+        lda_umap=lda_umap,
+        lda_label=lda_label,
+        lda_note=lda_note,
     )
+
+
+def _compute_lda_embedding(analyzer, expr: ad.AnnData, targets: List[str], cfg: Config):
+    """Build PS_python's supervised LDA embedding of the perturbations.
+
+    The UMAP in section 2 is unsupervised: it knows nothing about which guide a
+    cell carries, so a subtle perturbation phenotype can be invisible in it.
+    ``pertps.compute_lda_umap`` instead trains linear discriminant analysis on
+    the perturbation labels and embeds that space, which is where the per-cell
+    scores are most legible.
+
+    Returns ``(coords, labels, note)``; ``coords`` is ``None`` when the
+    embedding could not be built, with the reason in ``note``.
+    """
+    pcfg = cfg.ps_score
+    if not pcfg.compute_lda_umap:
+        return None, None, "ps_score.compute_lda_umap is false"
+    if not targets:
+        return None, None, "no scored targets to train on"
+
+    logger.info(
+        "Building the supervised LDA embedding over %d target(s) — this scales "
+        "the full matrix and runs a second UMAP, so it takes a few minutes",
+        len(targets),
+    )
+    try:
+        analyzer.compute_lda_umap(targets, n_pcs=pcfg.lda_n_pcs)
+    except Exception as exc:
+        note = (
+            f"the LDA embedding could not be built ({type(exc).__name__}: {exc})"
+        )
+        logger.warning("Skipping the LDA embedding: %s", exc)
+        return None, None, note
+
+    work = analyzer.adata
+    if "X_lda_umap" not in work.obsm:
+        return None, None, "pertps did not return an X_lda_umap embedding"
+
+    coords = np.asarray(work.obsm["X_lda_umap"], dtype=float)
+    labels = (
+        pd.Series(work.obs["lda_label"].astype(str).to_numpy(), index=work.obs_names)
+        if "lda_label" in work.obs
+        else None
+    )
+    coords = pd.DataFrame(coords, index=work.obs_names).reindex(expr.obs_names).to_numpy()
+    if labels is not None:
+        labels = labels.reindex(expr.obs_names)
+    n_placed = int(np.isfinite(coords).all(axis=1).sum())
+    logger.info(
+        "LDA embedding: %d/%d cells placed (cells outside the trained classes "
+        "have no coordinates)",
+        n_placed,
+        expr.n_obs,
+    )
+    return coords, labels, ""
 
 
 def _expression_cut(reference: pd.Series, pcfg) -> float:

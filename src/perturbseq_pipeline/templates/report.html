@@ -313,6 +313,31 @@
 <h3>5.3 Per-cell outcome for the strongest targets</h3>
 {% for f in figures.ps_per_target %}{{ render_figure(f) }}{% endfor %}
 
+<h3>5.4 The supervised LDA embedding</h3>
+{% if ps.has_lda %}
+<p class="lede">
+  The embedding in section 2 is unsupervised — it knows nothing about which
+  guide a cell carries, so a subtle phenotype can be invisible in it. This one
+  is built by training linear discriminant analysis on the perturbation labels
+  and embedding that space, so its axes are chosen to separate perturbations.
+  It is where the per-cell scores read most clearly.
+</p>
+{% for f in figures.ps_lda %}{{ render_figure(f) }}{% endfor %}
+{% if ps_lda_extras %}
+<div class="note">
+  <b>{{ ps_lda_extras|length }} further per-target LDA figures</b> are in
+  <code>{{ ps_lda_dir }}</code>:
+  <div class="filelist">
+    {% for name in ps_lda_extra_names %}<div>{{ name }}</div>{% endfor %}
+  </div>
+</div>
+{% endif %}
+{% else %}
+<div class="warn">
+  The LDA embedding was not built{% if ps.lda_note %}: {{ ps.lda_note }}{% endif %}.
+</div>
+{% endif %}
+
 {% if ps_extras %}
 <div class="note">
   <b>{{ ps_extras|length }} further per-target score figures</b> are in

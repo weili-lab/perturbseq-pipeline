@@ -612,6 +612,37 @@ def test_expression_cut_methods_are_selectable():
 
 
 @pertps_required
+def test_lda_embedding_is_built_and_plotted(mtx_run):
+    """PS_python's supervised LDA map must be produced, one figure per target."""
+    adata = mtx_run.adata
+    assert "X_lda_umap" in adata.obsm, "LDA embedding missing from obsm"
+    coords = np.asarray(adata.obsm["X_lda_umap"], dtype=float)
+    assert coords.shape == (adata.n_obs, 2)
+    placed = np.isfinite(coords).all(axis=1)
+    assert placed.sum() > 0, "no cells placed in the LDA embedding"
+    # Cells outside the trained classes (ambiguous/unassigned) get no
+    # coordinates by design, so this must not be all cells.
+    assert "lda_label" in adata.obs.columns
+
+    summary = pd.read_csv(mtx_run.outdir / "tables" / "ps_score.csv")
+    lda_figs = list((mtx_run.figures_dir / "ps_score" / "lda").glob("*.png"))
+    assert len(lda_figs) == len(summary), "one LDA figure per scored target"
+    overview = {p.stem for p in (mtx_run.figures_dir / "ps_score").glob("*.png")}
+    assert {"ps_lda_overview", "ps_lda_high_confidence"} <= overview
+
+
+def test_lda_embedding_can_be_disabled(synthetic, tmp_path):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_nolda")
+    cfg.ps_score.compute_lda_umap = False
+    result = run_pipeline(cfg)
+    assert "X_lda_umap" not in result.adata.obsm
+    assert not (result.outdir / "figures" / "ps_score" / "lda").exists()
+    assert result.report.is_file()
+
+
+@pertps_required
 def test_ps_figures_cover_every_scored_target(mtx_run):
     summary = pd.read_csv(mtx_run.outdir / "tables" / "ps_score.csv")
     figs = list((mtx_run.figures_dir / "ps_score" / "per_target").glob("*.png"))

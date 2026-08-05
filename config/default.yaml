@@ -107,6 +107,9 @@ ps_score:
   min_cells_per_target: 10
   min_control_cells: 10
   top_n_report: 12
+  compute_lda_umap: true
+  lda_n_pcs: 40
+  lda_highlight_threshold: 0.8
 report:
   title: Perturb-seq analysis report
   embed_figures: true

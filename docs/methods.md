@@ -337,6 +337,31 @@ therefore reported as untestable here too, the same rule the perturbation-
 strength stage uses. On the demo lane that removes every OR gene plus LEF1 and
 KLF4, leaving 46 of 54 targets scored.
 
+### The supervised LDA embedding
+
+`pertps.compute_lda_umap` builds a second embedding, and the distinction from
+the one in section 4 matters. That UMAP is **unsupervised**: it is built from
+expression alone and knows nothing about which guide a cell carries, so a
+perturbation whose phenotype is subtle relative to the dominant axes of
+variation can be invisible in it.
+
+This one trains **linear discriminant analysis on the perturbation labels**,
+then embeds the discriminant space with UMAP. The axes are therefore chosen to
+separate perturbations, which is where the per-cell scores read most clearly.
+It is the figure PS_python ships as `plots_fixed_lda/`.
+
+Three figures come out of it: an overview coloured by perturbation, a global
+summary highlighting cells above `ps_score.lda_highlight_threshold`, and one
+per scored target showing its cells shaded by score against everything else in
+grey.
+
+Two caveats. The LDA is trained only on targets with enough cells plus the
+control group, so **ambiguous and unassigned cells receive no coordinates** —
+on the demo lane 21,281 of 27,541 cells are placed. And the step is expensive:
+it scales the full matrix (which densifies it), runs PCA, LDA and a second
+UMAP, costing a few minutes and a few GB. Set
+`ps_score.compute_lda_umap: false` to skip it.
+
 ### Agreement with the group-level test
 
 The two measurements are deliberately compared, but they are **not** measuring

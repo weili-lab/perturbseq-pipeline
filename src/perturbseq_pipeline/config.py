@@ -300,6 +300,18 @@ class PSScoreConfig:
     #: Number of targets whose quadrant plots are embedded in the report; every
     #: scored target still gets a figure on disk.
     top_n_report: int = 12
+    #: Build the supervised LDA embedding from PS_python. Linear discriminant
+    #: analysis is trained on the perturbation labels, so unlike the
+    #: unsupervised UMAP in section 2 the axes are chosen to separate
+    #: perturbations, and the per-cell scores are shown in that space.
+    #: Costly: it scales the full matrix (densifying it), runs PCA, LDA and a
+    #: second UMAP, so expect a few extra minutes and a few GB of memory.
+    compute_lda_umap: bool = True
+    #: Principal components fed to the LDA.
+    lda_n_pcs: int = 40
+    #: Cells scoring at least this are highlighted as high-confidence
+    #: knockdowns on the global LDA summary.
+    lda_highlight_threshold: float = 0.8
 
 
 @dataclass

@@ -68,6 +68,13 @@ the signature yet still express the gene.
 pip install -e ".[ps]"    # brings in pertps from PS_python
 ```
 
+It also builds PS_python's **supervised LDA embedding**: where the UMAP in
+section 2 is unsupervised and knows nothing about which guide a cell carries,
+this one is trained on the perturbation labels, so its axes are chosen to
+separate perturbations. Scores are shown in that space, one figure per target.
+Disable with `ps_score.compute_lda_umap: false` if the extra few minutes and few
+GB are not worth it.
+
 Without the extra the stage is skipped and the report says so; set
 `ps_score.require: true` to make it a hard failure.
 
