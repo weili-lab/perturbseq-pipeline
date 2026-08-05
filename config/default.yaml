@@ -134,7 +134,9 @@ output:
   report_name: report.html
   large_file_dir: null
   large_file_threshold_mb: 50.0
-  write_guide_h5ad: true
+  merge_guides_into_h5ad: true
+  guide_obsm_key: guide_counts
+  write_guide_h5ad: false
   save_figures_pdf: false
   archive: true
   archive_name: null

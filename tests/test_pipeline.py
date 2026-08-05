@@ -148,9 +148,12 @@ def test_top_two_handles_all_zero_rows():
 
 
 def test_mtx_run_produces_all_deliverables(mtx_run):
+    import scanpy as sc
+
     assert mtx_run.report.is_file(), "report.html missing"
     assert mtx_run.h5ad.is_file(), "processed h5ad missing"
-    assert mtx_run.guide_h5ad is not None and mtx_run.guide_h5ad.is_file()
+    # Guides now travel inside the processed h5ad rather than beside it.
+    assert "guide_counts" in sc.read_h5ad(mtx_run.h5ad).obsm
     assert (mtx_run.outdir / "logs" / "resolved_config.yaml").is_file()
     figures = list(mtx_run.figures_dir.rglob("*.png"))
     assert len(figures) > 15, f"expected many figures, got {len(figures)}"
@@ -777,6 +780,65 @@ def test_missing_pertps_can_be_made_fatal(synthetic, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Guides merged into the processed h5ad
+# ---------------------------------------------------------------------------
+
+
+def test_guides_are_merged_into_the_processed_h5ad(mtx_run):
+    """One file should carry both matrices, with the guides in obsm."""
+    import scanpy as sc
+
+    adata = sc.read_h5ad(mtx_run.h5ad)
+    assert "guide_counts" in adata.obsm, "guide matrix missing from the h5ad"
+    assert "guide_names" in adata.uns
+
+    guides = adata.obsm["guide_counts"]
+    assert sp.issparse(guides), "must stay sparse; dense would be far larger"
+    assert guides.shape[0] == adata.n_obs, "one row per cell"
+    assert guides.shape[1] == len(adata.uns["guide_names"])
+    # Guide counts are raw integers — they must not have been normalized along
+    # with the gene expression.
+    data = guides.data[:200]
+    assert np.allclose(data, np.round(data)), "guide counts must stay integers"
+
+    # By default the separate file is no longer written.
+    assert mtx_run.guide_h5ad is None
+
+
+def test_merged_h5ad_round_trips_through_the_reader(mtx_run, synthetic, tmp_path):
+    """A merged object must be re-analyzable with no companion file."""
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_merged")
+    cfg.input.mtx_dirs = None
+    cfg.input.h5ad = str(mtx_run.h5ad)
+    cfg.input.counts_layer = "counts"
+    cfg.metadata.file = None
+    cfg.ps_score.enabled = False
+    cfg.lochness.enabled = False
+    result = run_pipeline(cfg)
+
+    # Guides were recovered from obsm, so assignments reproduce.
+    original = mtx_run.adata.obs["target_gene"].astype(str)
+    reloaded = result.adata.obs["target_gene"].astype(str)
+    shared = original.index.intersection(reloaded.index)
+    assert len(shared) > 0
+    agree = (original.loc[shared] == reloaded.loc[shared]).mean()
+    assert agree > 0.99, f"round-trip changed {100 * (1 - agree):.1f}% of calls"
+
+
+def test_separate_guide_h5ad_can_still_be_written(synthetic, tmp_path):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_both")
+    cfg.output.write_guide_h5ad = True
+    cfg.ps_score.enabled = False
+    cfg.lochness.enabled = False
+    result = run_pipeline(cfg)
+    assert result.guide_h5ad is not None and result.guide_h5ad.is_file()
+
+
+# ---------------------------------------------------------------------------
 # Separate GEX / guide quantifications (STARsolo layout)
 # ---------------------------------------------------------------------------
 
@@ -824,7 +886,9 @@ def test_separate_gex_and_guide_directories(tmp_path):
     tbl = result.perturbation_table.set_index("target_gene")
     for gene in KD_TARGETS:
         assert tbl.loc[gene, "is_hit_ntc"], f"{gene} lost after the split-dir load"
-    assert result.guide_h5ad is not None and result.guide_h5ad.is_file()
+    import scanpy as sc
+
+    assert "guide_counts" in sc.read_h5ad(result.h5ad).obsm
 
 
 def test_guide_mtx_dirs_must_cover_every_lane():
@@ -906,8 +970,8 @@ def test_guide_table_is_written_and_matches_the_matrix(mtx_run):
 
     assert table["umi_count"].min() >= 3, "entries below the threshold must be dropped"
 
-    guides = sc.read_h5ad(mtx_run.guide_h5ad)
-    X = guides.layers["counts"] if "counts" in guides.layers else guides.X
+    merged = sc.read_h5ad(mtx_run.h5ad)
+    X = merged.obsm["guide_counts"]
     dense = X.toarray() if sp.issparse(X) else np.asarray(X)
     expected_rows = int((dense >= 3).sum())
     assert len(table) == expected_rows, "one row per matrix entry above threshold"

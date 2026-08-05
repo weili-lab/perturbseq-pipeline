@@ -281,8 +281,7 @@ S1lane2,S1,2,ESC,TF_screen,1
 ```
 results/<run>/
 ├── report.html                      # deliverable 2 — self-contained
-├── processed.h5ad                   # deliverable 1
-├── processed_guides.h5ad            # guide count matrix
+├── processed.h5ad                   # deliverable 1 — includes the guide matrix
 ├── figures/                         # deliverable 3
 │   ├── qc/                          # cell QC, before and after filtering
 │   ├── guides/                      # Perturb-seq guide QC
@@ -350,12 +349,43 @@ output:
 |---|---|
 | `X`, `layers['lognorm']` | log1p of library-size-normalized counts |
 | `layers['counts']` | raw integer counts |
+| `obsm['guide_counts']` | the raw guide count matrix, sparse (cells x guides) |
+| `uns['guide_names']`, `uns['guide_target_genes']` | guide IDs and their parsed targets |
 | `obs['target_gene']` | assigned target, or `ambiguous` / `unassigned` / `non-targeting` |
 | `obs['perturbation_class']` | `targeting` / `non-targeting` / `ambiguous` / `unassigned` |
 | `obs['guide_id']`, `top_guide_count`, `second_guide_count` | guide-call diagnostics |
 | `obs['total_guide_counts']`, `n_guides_detected` | guide depth and MOI |
 | `obs['leiden']`, `obsm['X_umap']` | clustering and embedding |
 | `obs[...]` | all sample metadata columns |
+
+### One file, both matrices
+
+The guide counts live **inside** the processed `.h5ad`, in
+`obsm['guide_counts']`, so a run is a single file rather than a pair that can
+drift apart. They sit in `obsm` rather than being concatenated onto `var`
+because guide counts are not gene expression: putting them in `var` would feed
+them to normalization, HVG selection and scaling along with the genes.
+
+They stay sparse — on the THP-1 run that is 7.2M non-zeros in a 103,151 x 694
+matrix, about 58 MB in memory against 286 MB dense. `obsm` also keeps the rows
+tied to the cells through any subsetting, which two separate files do not.
+
+```python
+import scanpy as sc
+adata = sc.read_h5ad("results/my_run/processed.h5ad")
+guides = adata.obsm["guide_counts"]          # sparse, cells x guides
+names  = adata.uns["guide_names"]            # column labels
+```
+
+A merged object can be fed straight back to the pipeline — the reader detects
+`obsm['guide_counts']` and rebuilds the guide matrix, no companion file needed.
+
+```yaml
+output:
+  merge_guides_into_h5ad: true   # guides inside the processed .h5ad
+  guide_obsm_key: guide_counts
+  write_guide_h5ad: false        # also write the old separate file
+```
 
 ---
 

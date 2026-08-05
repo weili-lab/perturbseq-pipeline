@@ -391,8 +391,16 @@ class OutputConfig:
     report_name: str = "report.html"
     large_file_dir: Optional[str] = None
     large_file_threshold_mb: float = 50.0
-    #: Also write the guide count matrix as its own ``.h5ad``.
-    write_guide_h5ad: bool = True
+    #: Store the guide count matrix inside the processed ``.h5ad`` rather than
+    #: beside it, as ``obsm['guide_counts']`` with the guide names in
+    #: ``uns['guide_names']``. Sparse, so it costs a few MB, and it keeps the
+    #: guides aligned to the cells by construction.
+    merge_guides_into_h5ad: bool = True
+    #: Key used for the merged guide matrix.
+    guide_obsm_key: str = "guide_counts"
+    #: Also write the guide count matrix as its own ``.h5ad``. Redundant once
+    #: the guides are merged, so off by default.
+    write_guide_h5ad: bool = False
     save_figures_pdf: bool = False
     #: Bundle the run outputs into a single ``.tar.gz`` for sharing. The
     #: matrices are excluded by default (see :attr:`archive_exclude`), so the

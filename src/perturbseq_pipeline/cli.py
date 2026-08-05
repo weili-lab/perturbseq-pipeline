@@ -237,6 +237,7 @@ def run_pipeline(cfg: Config, verbose: bool = False) -> PipelineResult:
     tables["manifest"] = registry.manifest()
     registry.manifest().to_csv(tabledir / "figure_manifest.csv", index=False)
 
+    expr = io_mod.merge_guides_into_expr(expr, guides, cfg)
     h5ad_path = io_mod.write_h5ad(expr, outdir / cfg.output.h5ad_name)
     h5ad_path = io_mod.relocate_if_large(h5ad_path, cfg)
 

@@ -279,6 +279,11 @@ def _load_h5ad(cfg: Config) -> LoadedData:
 
     lanes = _lanes_from_obs(adata, cfg)
 
+    merged = guides_from_obsm(adata, cfg)
+    if merged is not None:
+        _ensure_counts_layer(adata)
+        return LoadedData(adata, merged, "matrix", lanes)
+
     ftype_col = cfg.input.feature_type_column
     has_guide_vars = (
         ftype_col in adata.var.columns
@@ -787,6 +792,60 @@ def read_sample_metadata(path: str, key_column: str) -> pd.DataFrame:
     if dupes:
         raise ValueError(f"Duplicate {key_column} value(s) in {p}: {sorted(set(dupes))}")
     return meta
+
+
+def merge_guides_into_expr(
+    expr: ad.AnnData, guides: Optional[ad.AnnData], cfg: Config
+) -> ad.AnnData:
+    """Store the guide count matrix inside the expression object.
+
+    Kept in ``obsm`` rather than concatenated onto ``var``: guide counts are not
+    gene expression and must not be normalized, scaled or fed to HVG selection
+    along with the genes. ``obsm`` also guarantees the rows stay aligned to the
+    cells through any subsetting, which two separate files do not.
+
+    Guide names go to ``uns['guide_names']`` (``obsm`` arrays carry no column
+    labels) together with their parsed target genes, which is enough to
+    reconstruct the guide object on read.
+    """
+    from scipy import sparse
+
+    if guides is None or not cfg.output.merge_guides_into_h5ad:
+        return expr
+
+    aligned = guides[expr.obs_names]
+    X = aligned.layers["counts"] if "counts" in aligned.layers else aligned.X
+    key = cfg.output.guide_obsm_key
+    expr.obsm[key] = sparse.csr_matrix(X)
+    expr.uns["guide_names"] = np.asarray(aligned.var_names.astype(str), dtype=object)
+    if "target_gene" in aligned.var.columns:
+        expr.uns["guide_target_genes"] = np.asarray(
+            aligned.var["target_gene"].astype(str), dtype=object
+        )
+    logger.info(
+        "Merged the guide matrix into obsm[%r] (%d guides)", key, aligned.n_vars
+    )
+    return expr
+
+
+def guides_from_obsm(adata: ad.AnnData, cfg: Config) -> Optional[ad.AnnData]:
+    """Rebuild the guide AnnData from a merged ``.h5ad``.
+
+    The inverse of :func:`merge_guides_into_expr`, so a processed object written
+    by this pipeline can be re-analyzed without its companion file.
+    """
+    key = cfg.output.guide_obsm_key
+    if key not in adata.obsm or "guide_names" not in adata.uns:
+        return None
+    names = [str(n) for n in adata.uns["guide_names"]]
+    guides = ad.AnnData(X=adata.obsm[key])
+    guides.obs_names = adata.obs_names
+    guides.var_names = pd.Index(names)
+    if "guide_target_genes" in adata.uns:
+        guides.var["target_gene"] = [str(t) for t in adata.uns["guide_target_genes"]]
+    guides.layers["counts"] = guides.X.copy()
+    logger.info("Recovered %d guides from obsm[%r]", guides.n_vars, key)
+    return guides
 
 
 def write_h5ad(adata: ad.AnnData, path: Path, compression: str = "gzip") -> Path:
