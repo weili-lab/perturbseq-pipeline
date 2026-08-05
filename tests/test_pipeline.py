@@ -236,6 +236,80 @@ def test_both_control_arms_are_reported(mtx_run):
         assert f"is_hit_{control}" in cols
 
 
+# ---------------------------------------------------------------------------
+# cluster.assigned_only
+# ---------------------------------------------------------------------------
+
+
+def test_assigned_only_is_off_by_default():
+    assert Config.from_dict({"input": {"h5ad": "x.h5ad"}}).cluster.assigned_only is False
+
+
+@pytest.fixture(scope="module")
+def assigned_only_run(synthetic, tmp_path_factory):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    outdir = tmp_path_factory.mktemp("assigned_only")
+    return run_pipeline(_base_config(synthetic, outdir, cluster={"assigned_only": True}))
+
+
+def test_assigned_only_analyses_singlets_only(assigned_only_run, mtx_run):
+    """The analysed h5ad holds exactly the guide-assigned singlets."""
+    import scanpy as sc
+
+    adata = sc.read_h5ad(assigned_only_run.h5ad)
+    klass = adata.obs["perturbation_class"].astype(str)
+
+    assert set(klass) <= {"targeting", "non-targeting"}
+    assert adata.n_obs == assigned_only_run.n_cells
+    # The synthetic data must actually contain multiplets for this to mean anything.
+    assert adata.n_obs < sc.read_h5ad(mtx_run.h5ad).n_obs
+
+    # Every analysed cell is fully embedded and clustered — no NaN padding.
+    assert not adata.obs["leiden"].isna().any()
+    assert np.isfinite(np.asarray(adata.obsm["X_umap"])).all()
+
+
+def test_assigned_only_writes_an_all_cells_h5ad_with_ambiguous_cells(
+    assigned_only_run, mtx_run
+):
+    """The pre-filter object keeps every cell, so ambiguous cells stay visible."""
+    import scanpy as sc
+
+    assert assigned_only_run.unfiltered_h5ad is not None
+    allc = sc.read_h5ad(assigned_only_run.unfiltered_h5ad)
+
+    # Same cells as a default (unfiltered) run, ambiguous ones included.
+    assert allc.n_obs == sc.read_h5ad(mtx_run.h5ad).n_obs
+    assert {"ambiguous", "unassigned"} & set(allc.obs["perturbation_class"].astype(str))
+
+    # It carries its own complete embedding — every cell has real coordinates,
+    # and the neighbor graph its uns refers to is actually present.
+    assert not allc.obs["leiden"].isna().any()
+    assert np.isfinite(np.asarray(allc.obsm["X_umap"])).all()
+    assert allc.uns["neighbors"]["connectivities_key"] in allc.obsp
+
+    x = allc.X.toarray() if sp.issparse(allc.X) else np.asarray(allc.X)
+    ln = allc.layers["lognorm"]
+    ln = ln.toarray() if sp.issparse(ln) else np.asarray(ln)
+    assert np.allclose(x, ln)
+
+
+def test_assigned_only_umap_figures_cover_both_cell_sets(assigned_only_run):
+    """The all-cell UMAPs are emitted alongside, not on top of, the analysis ones."""
+    figs = {p.stem for p in assigned_only_run.figures_dir.rglob("*.png")}
+    assert "umap_assignment_class" in figs
+    assert "all_cells_umap_assignment_class" in figs
+
+
+def test_analysed_h5ad_graph_is_self_consistent(mtx_run):
+    """uns['neighbors'] must not point at an obsp key that was dropped."""
+    import scanpy as sc
+
+    adata = sc.read_h5ad(mtx_run.h5ad)
+    assert adata.uns["neighbors"]["connectivities_key"] in adata.obsp
+
+
 def test_metadata_is_merged_into_obs(mtx_run):
     obs = mtx_run.adata.obs
     for col in ("lane_id", "sample", "condition", "replicate"):

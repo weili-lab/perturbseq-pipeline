@@ -523,8 +523,21 @@ def _plot_representation(expr, guides, reg: FigureRegistry, cfg: Config) -> None
 # ---------------------------------------------------------------------------
 
 
-def plot_clustering(expr, reg: FigureRegistry, cfg: Config) -> None:
-    """PCA scree, UMAP by cluster / QC / lane / perturbation class."""
+def plot_clustering(
+    expr,
+    reg: FigureRegistry,
+    cfg: Config,
+    *,
+    name_prefix: str = "",
+    section: str = SECTION_CLUSTERING,
+    label: str = "",
+) -> None:
+    """PCA scree, UMAP by cluster / QC / lane / perturbation class.
+
+    ``name_prefix``/``section``/``label`` let the same figures be produced for a
+    second embedding (the all-cell one written under ``cluster.assigned_only``)
+    without overwriting the analysis figures.
+    """
     if "pca" in expr.uns and "variance_ratio" in expr.uns["pca"]:
         vr = expr.uns["pca"]["variance_ratio"]
         fig, ax = plt.subplots(figsize=(4.8, 3.6))
@@ -532,14 +545,14 @@ def plot_clustering(expr, reg: FigureRegistry, cfg: Config) -> None:
         ax.set_yscale("log")
         ax.set_xlabel("Principal component")
         ax.set_ylabel("Variance ratio")
-        ax.set_title("PCA scree plot", fontsize=11)
+        ax.set_title(f"PCA scree plot{label}", fontsize=11)
         sns.despine(ax=ax)
         fig.tight_layout()
         reg.save(
             fig,
-            "pca_variance",
-            SECTION_CLUSTERING,
-            "PCA variance ratio",
+            f"{name_prefix}pca_variance",
+            section,
+            f"PCA variance ratio{label}",
             "Where the curve flattens suggests how many components carry signal; "
             f"the pipeline used {cfg.cluster.n_pcs} for the neighbor graph.",
         )
@@ -556,9 +569,9 @@ def plot_clustering(expr, reg: FigureRegistry, cfg: Config) -> None:
         fig.tight_layout()
         reg.save(
             fig,
-            "umap_clusters",
-            SECTION_CLUSTERING,
-            "UMAP coloured by Leiden cluster",
+            f"{name_prefix}umap_clusters",
+            section,
+            f"UMAP coloured by Leiden cluster{label}",
             f"{obs[CLUSTER_KEY].nunique()} clusters at resolution "
             f"{cfg.cluster.leiden_resolution}.",
         )
@@ -579,9 +592,9 @@ def plot_clustering(expr, reg: FigureRegistry, cfg: Config) -> None:
         fig.tight_layout()
         reg.save(
             fig,
-            "umap_qc_metrics",
-            SECTION_CLUSTERING,
-            "UMAP coloured by QC metrics",
+            f"{name_prefix}umap_qc_metrics",
+            section,
+            f"UMAP coloured by QC metrics{label}",
             "A cluster driven purely by library size or mitochondrial content is a "
             "technical artefact rather than a biological state.",
         )
@@ -592,9 +605,9 @@ def plot_clustering(expr, reg: FigureRegistry, cfg: Config) -> None:
         fig.tight_layout()
         reg.save(
             fig,
-            "umap_lane",
-            SECTION_CLUSTERING,
-            "UMAP coloured by lane",
+            f"{name_prefix}umap_lane",
+            section,
+            f"UMAP coloured by lane{label}",
             "Lanes should intermix. Separation by lane means a batch effect; set "
             "cluster.batch_key to enable Harmony correction.",
         )
@@ -606,9 +619,9 @@ def plot_clustering(expr, reg: FigureRegistry, cfg: Config) -> None:
         fig.tight_layout()
         reg.save(
             fig,
-            "umap_assignment_class",
-            SECTION_CLUSTERING,
-            "UMAP coloured by guide assignment",
+            f"{name_prefix}umap_assignment_class",
+            section,
+            f"UMAP coloured by guide assignment{label}",
             "Unassigned cells clustering together often indicates a technically "
             "distinct population (e.g. low-quality cells) rather than a biological one.",
         )
