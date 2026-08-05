@@ -1,0 +1,69 @@
+# THP-1 / M0 / M1 Perturb-seq (Myllia). TEST configuration: one channel per
+# sample only. The full dataset has two channels per sample.
+#
+# Format differences from the ESC screen:
+#   * gene expression and guides are quantified separately (STARsolo), so each
+#     lane needs an entry in both mtx_dirs and guide_mtx_dirs;
+#   * the guide matrix covers the whole barcode whitelist (737,280 barcodes),
+#     and is subset to the called cells on load;
+#   * guide names carry multi-token targets (gene_desert_1), so the first-
+#     delimiter split would produce a target called "gene" — hence target_regex.
+run:
+  name: thp1_test_1ch
+  outdir: /content/perturbseq-pipeline/results/thp1_test
+  seed: 0
+
+input:
+  mode: mtx
+  mtx_dirs:
+    THP1_ch1: "/content/drive/MyDrive/Colab Notebooks/scGPT/data/myllia_THP1/thp1_myllia/THP1_perturb_seq/count_matrices/THP1/ch_1/GEX/filtered"
+    M0_ch1:   "/content/drive/MyDrive/Colab Notebooks/scGPT/data/myllia_THP1/thp1_myllia/THP1_perturb_seq/count_matrices/M0/ch_1/GEX/filtered"
+    M1_ch1:   "/content/drive/MyDrive/Colab Notebooks/scGPT/data/myllia_THP1/thp1_myllia/THP1_perturb_seq/count_matrices/M1/ch_1/GEX/filtered"
+  guide_mtx_dirs:
+    THP1_ch1: "/content/drive/MyDrive/Colab Notebooks/scGPT/data/myllia_THP1/thp1_myllia/THP1_perturb_seq/count_matrices/THP1/ch_1/sgRNA/raw"
+    M0_ch1:   "/content/drive/MyDrive/Colab Notebooks/scGPT/data/myllia_THP1/thp1_myllia/THP1_perturb_seq/count_matrices/M0/ch_1/sgRNA/raw"
+    M1_ch1:   "/content/drive/MyDrive/Colab Notebooks/scGPT/data/myllia_THP1/thp1_myllia/THP1_perturb_seq/count_matrices/M1/ch_1/sgRNA/raw"
+  var_names: gene_symbols
+
+metadata:
+  file: demo/thp1_sample_metadata.csv
+  key_column: lane_id
+
+qc:
+  min_genes_per_cell: 200
+  min_cells_per_gene: 3
+  min_genes_final: 500
+  max_pct_mt: 20.0
+
+guides:
+  min_umi: 3
+  dominance_ratio: 2.0
+  # Strip only a trailing _<number>: ADGRV1_1 -> ADGRV1, gene_desert_1 ->
+  # gene_desert, non-targeting_20 -> non-targeting.
+  target_regex: '^(.+)_\d+$'
+  ntc_patterns: ["^non[-_.]?targeting$"]
+
+cluster:
+  n_top_genes: 3000
+  n_pcs: 50
+  # Three different cell states across three channels: correct for channel,
+  # not for cell state, or real biology would be regressed away.
+  batch_key: lane_id
+
+perturbation:
+  min_cells_per_target: 10
+enrichment:
+  enabled: true
+  stratify_by: lane_id
+ps_score:
+  enabled: true
+  require: true
+lochness:
+  enabled: true
+
+report:
+  title: "Perturb-seq report — THP-1 / M0 / M1 (test: 1 channel per sample)"
+
+output:
+  h5ad_name: thp1_test_processed.h5ad
+  large_file_dir: null

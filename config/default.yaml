@@ -5,6 +5,7 @@ run:
 input:
   mode: auto
   mtx_dirs: null
+  guide_mtx_dirs: null
   h5ad: null
   guide_h5ad: null
   guide_obs_column: null

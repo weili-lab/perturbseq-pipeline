@@ -139,7 +139,31 @@ def omnibus_test(
     """
     if contingency.empty or contingency.shape[0] < 2 or contingency.shape[1] < 2:
         return {}
-    observed = contingency.to_numpy(dtype=float)
+
+    # chi2_contingency rejects any table with a zero row or column margin, and
+    # both occur naturally here: a cluster can hold no targeting cells at all
+    # (they may all be ambiguous or non-targeting), and a target's cells can all
+    # sit in clusters that were too small to test. Prune those margins rather
+    # than letting the whole stage die on them.
+    table = contingency.loc[
+        contingency.sum(axis=1) > 0, contingency.sum(axis=0) > 0
+    ]
+    dropped_rows = contingency.shape[0] - table.shape[0]
+    dropped_cols = contingency.shape[1] - table.shape[1]
+    if dropped_rows or dropped_cols:
+        logger.info(
+            "Omnibus test: dropped %d empty target row(s) and %d empty cluster "
+            "column(s) with no counts",
+            dropped_rows,
+            dropped_cols,
+        )
+    if table.shape[0] < 2 or table.shape[1] < 2:
+        logger.warning(
+            "Omnibus test needs at least a 2x2 table after pruning; skipping it."
+        )
+        return {}
+
+    observed = table.to_numpy(dtype=float)
     chi2, p_chi2, dof, expected = chi2_contingency(observed)
     small = float((expected < 5).mean())
 

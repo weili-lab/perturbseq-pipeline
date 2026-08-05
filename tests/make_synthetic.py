@@ -9,6 +9,7 @@ the perturbation stage recovers the right answer instead of merely running.
 from __future__ import annotations
 
 import gzip
+import shutil
 from pathlib import Path
 from typing import List
 
@@ -104,6 +105,52 @@ def make_lane(
     path = outdir / f"filtered_feature_bc_matrix_{lane_id}"
     _write_mtx_dir(path, matrix, barcodes, features)
     return path
+
+
+def make_split_lane(outdir: Path, lane_id: str, n_cells: int = 300, seed: int = 0,
+                    whitelist_extra: int = 500) -> dict:
+    """Write a lane with gene expression and guides in *separate* directories.
+
+    Mimics a STARsolo-style run: ``GEX/`` holds called cells only, while
+    ``sgRNA/`` covers a much larger barcode whitelist, so the loader has to
+    subset and align.
+    """
+    rng = np.random.default_rng(seed)
+    combined = make_lane(outdir / "_tmp", lane_id, n_cells=n_cells, seed=seed)
+
+    import scanpy as sc
+
+    a = sc.read_10x_mtx(combined, gex_only=False, cache=False)
+    a.var_names_make_unique()
+    is_guide = (a.var["feature_types"] == "Custom").to_numpy()
+    gex, guides = a[:, ~is_guide].copy(), a[:, is_guide].copy()
+
+    gex_dir = outdir / lane_id / "GEX" / "filtered"
+    _write_mtx_dir(
+        gex_dir,
+        gex.X.toarray() if hasattr(gex.X, "toarray") else np.asarray(gex.X),
+        list(gex.obs_names),
+        pd.DataFrame({"id": list(gex.var["gene_ids"]), "name": list(gex.var_names),
+                      "type": ["Gene Expression"] * gex.n_vars}),
+    )
+
+    # The guide matrix carries extra whitelist barcodes the GEX run never called.
+    extra = [f"WHITELIST{i:06d}" for i in range(whitelist_extra)]
+    gmat = np.vstack([
+        guides.X.toarray() if hasattr(guides.X, "toarray") else np.asarray(guides.X),
+        rng.poisson(0.05, size=(whitelist_extra, guides.n_vars)),
+    ])
+    order = rng.permutation(gmat.shape[0])
+    all_bc = list(guides.obs_names) + extra
+    _write_mtx_dir(
+        outdir / lane_id / "sgRNA" / "raw",
+        gmat[order],
+        [all_bc[i] for i in order],
+        pd.DataFrame({"id": list(guides.var["gene_ids"]), "name": list(guides.var_names),
+                      "type": ["Gene Expression"] * guides.n_vars}),
+    )
+    shutil.rmtree(outdir / "_tmp", ignore_errors=True)
+    return {"gex": str(gex_dir), "guides": str(outdir / lane_id / "sgRNA" / "raw")}
 
 
 def make_dataset(outdir: Path, n_lanes: int = 2, n_cells: int = 400) -> dict:

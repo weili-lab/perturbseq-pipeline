@@ -550,6 +550,34 @@ def test_guide_concordance_follows_the_observed_direction():
     assert (conc, tested) == (0, 3), "none support an enrichment"
 
 
+def test_omnibus_tolerates_empty_rows_and_columns():
+    """A cluster with no targeting cells must not kill the whole stage.
+
+    scipy's chi2_contingency raises on any zero margin, and both kinds occur in
+    real data: a small cluster can be entirely ambiguous cells, and a target's
+    cells can all fall in clusters too small to test. This surfaced on the
+    THP-1 run, where 63 clusters made an empty column certain.
+    """
+    from perturbseq_pipeline.enrichment import omnibus_test
+
+    tbl = pd.DataFrame(
+        [[50, 0, 10], [5, 0, 40], [0, 0, 0]],
+        index=["A", "B", "C"],
+        columns=["c1", "c2", "c3"],
+    )
+    res = omnibus_test(tbl, n_permutations=100, seed=0)
+    assert res, "should return a result rather than raising"
+    assert np.isfinite(res["chi2"])
+    assert res["p_permutation"] < 0.5
+
+
+def test_omnibus_returns_empty_when_nothing_is_left():
+    from perturbseq_pipeline.enrichment import omnibus_test
+
+    tbl = pd.DataFrame([[5, 0], [0, 0]], index=["A", "B"], columns=["c1", "c2"])
+    assert omnibus_test(tbl, n_permutations=10, seed=0) == {}
+
+
 def test_omnibus_detects_association_and_null():
     from perturbseq_pipeline.enrichment import omnibus_test
 
@@ -746,6 +774,81 @@ def test_missing_pertps_can_be_made_fatal(synthetic, tmp_path, monkeypatch):
     cfg.ps_score.require = True
     with pytest.raises(ps_mod.PertpsUnavailable):
         run_pipeline(cfg)
+
+
+# ---------------------------------------------------------------------------
+# Separate GEX / guide quantifications (STARsolo layout)
+# ---------------------------------------------------------------------------
+
+
+def test_separate_gex_and_guide_directories(tmp_path):
+    """Expression and guides quantified into two MTX dirs, as STARsolo emits.
+
+    The guide matrix also covers a far larger barcode whitelist than the called
+    cells, so the loader must subset and align rather than fail or mis-order.
+    """
+    from make_synthetic import make_split_lane
+
+    from perturbseq_pipeline.cli import run_pipeline
+
+    lanes = {}
+    guide_dirs = {}
+    for i, lane in enumerate(["L1", "L2"]):
+        paths = make_split_lane(tmp_path / "split", lane, n_cells=300, seed=i)
+        lanes[lane] = paths["gex"]
+        guide_dirs[lane] = paths["guides"]
+
+    meta = tmp_path / "meta.csv"
+    pd.DataFrame({"lane_id": list(lanes), "sample": ["S1", "S2"]}).to_csv(meta, index=False)
+
+    cfg = Config.from_dict(
+        {
+            "run": {"name": "split", "outdir": str(tmp_path / "run_split")},
+            "input": {"mtx_dirs": lanes, "guide_mtx_dirs": guide_dirs},
+            "metadata": {"file": str(meta)},
+            "qc": {"min_genes_per_cell": 10, "min_genes_final": 50, "max_pct_mt": 100},
+            "cluster": {"n_top_genes": 80, "n_pcs": 10},
+            "perturbation": {"min_cells_per_target": 5, "top_n_report": 2},
+            "ps_score": {"enabled": False},
+            "lochness": {"enabled": False},
+        }
+    )
+    cfg.validate()
+    result = run_pipeline(cfg)
+
+    # The whitelist-only barcodes must not leak into the analysis.
+    assert result.n_cells <= 600
+    assert not any(str(n).startswith("WHITELIST") for n in result.adata.obs_names)
+
+    # Guides aligned correctly, so the planted knockdowns are still recovered.
+    tbl = result.perturbation_table.set_index("target_gene")
+    for gene in KD_TARGETS:
+        assert tbl.loc[gene, "is_hit_ntc"], f"{gene} lost after the split-dir load"
+    assert result.guide_h5ad is not None and result.guide_h5ad.is_file()
+
+
+def test_guide_mtx_dirs_must_cover_every_lane():
+    cfg = Config.from_dict(
+        {"input": {"mtx_dirs": {"L1": "/a", "L2": "/b"}, "guide_mtx_dirs": {"L1": "/g"}}}
+    )
+    with pytest.raises(ValueError, match="must cover every lane"):
+        cfg.validate()
+
+
+def test_target_regex_handles_gene_desert_controls():
+    """A guide library with multi-token names needs the regex override.
+
+    The THP-1 library uses `gene_desert_1` cutting controls alongside
+    `non-targeting_1`; splitting on the first delimiter would turn those into
+    a target called "gene".
+    """
+    g = GuideConfig(target_regex=r"^(.+)_\d+$")
+    got = list(
+        parse_target_genes(
+            ["ADGRV1_1", "gene_desert_3", "non-targeting_20", "AK9_2"], g
+        )
+    )
+    assert got == ["ADGRV1", "gene_desert", "non-targeting", "AK9"]
 
 
 # ---------------------------------------------------------------------------

@@ -93,7 +93,10 @@ def _load_mtx(cfg: Config) -> LoadedData:
     if not lanes:
         raise ValueError("input.mtx_dirs is empty")
 
+    guide_dirs = cfg.input.guide_mtx_dirs or {}
+
     per_lane = []
+    per_lane_guides = []
     for lane_id, path in lanes.items():
         p = Path(path)
         if not p.is_dir():
@@ -107,11 +110,20 @@ def _load_mtx(cfg: Config) -> LoadedData:
             gex_only=False,
         )
         a.var_names_make_unique()
+
+        if guide_dirs:
+            g = _read_guide_mtx(Path(guide_dirs[lane_id]), lane_id, a.obs_names, cfg)
+            per_lane_guides.append(g)
         per_lane.append(a)
 
     if len(per_lane) == 1:
         adata = per_lane[0]
         adata.obs[LANE_KEY] = pd.Categorical([next(iter(lanes))] * adata.n_obs)
+        guides_all = per_lane_guides[0] if per_lane_guides else None
+        if guides_all is not None:
+            guides_all.obs[LANE_KEY] = pd.Categorical(
+                [next(iter(lanes))] * guides_all.n_obs
+            )
     else:
         _check_matching_vars(per_lane, list(lanes))
         var_backup = per_lane[0].var.copy()
@@ -126,9 +138,95 @@ def _load_mtx(cfg: Config) -> LoadedData:
         # from lane 1 guarantees feature_types/gene_ids survive.
         adata.var = var_backup.loc[adata.var_names]
 
+        guides_all = None
+        if per_lane_guides:
+            _check_matching_vars(per_lane_guides, list(lanes))
+            gvar_backup = per_lane_guides[0].var.copy()
+            # Same keys and index_unique as above, so guide obs_names line up
+            # cell-for-cell with the expression matrix.
+            guides_all = sc.concat(
+                per_lane_guides,
+                label=LANE_KEY,
+                keys=list(lanes),
+                index_unique="-",
+                merge="same",
+            )
+            guides_all.var = gvar_backup.loc[guides_all.var_names]
+
     adata.var_names_make_unique()
+
+    if guides_all is not None:
+        # Expression and guides came from separate quantifications; nothing was
+        # split, so this path never calls split_features.
+        _ensure_counts_layer(adata)
+        guides_all = guides_all[adata.obs_names].copy()
+        logger.info(
+            "Separate guide quantification: %d cells x %d guides",
+            guides_all.n_obs,
+            guides_all.n_vars,
+        )
+        return LoadedData(
+            expr=adata, guides=guides_all, guide_source="matrix", lanes=dict(lanes)
+        )
+
     expr, guides = split_features(adata, cfg)
     return LoadedData(expr=expr, guides=guides, guide_source="matrix", lanes=dict(lanes))
+
+
+def _read_guide_mtx(
+    path: Path, lane_id: str, cell_names: pd.Index, cfg: Config
+) -> ad.AnnData:
+    """Read a companion guide-count MTX directory and align it to the cells.
+
+    STARsolo-style runs quantify guides separately from gene expression, and the
+    guide matrix is usually emitted over the entire barcode whitelist (hundreds
+    of thousands of columns) rather than the called cells. It is therefore
+    subset to the barcodes present in the expression matrix, and a missing
+    overlap is an error rather than a silently empty guide matrix.
+    """
+    if not path.is_dir():
+        raise FileNotFoundError(
+            f"Guide MTX directory for lane {lane_id!r} not found: {path}"
+        )
+    _check_mtx_dir(path, f"{lane_id} (guides)")
+    logger.info("Reading guide counts for lane %s from %s", lane_id, path)
+    g = sc.read_10x_mtx(
+        path, var_names="gene_ids", cache=cfg.input.cache_mtx, gex_only=False
+    )
+    g.var_names_make_unique()
+
+    shared = cell_names.intersection(g.obs_names)
+    if len(shared) == 0:
+        raise ValueError(
+            f"No barcode overlap between the expression and guide matrices for "
+            f"lane {lane_id!r}. Example expression barcode: {cell_names[0]!r}; "
+            f"example guide barcode: {g.obs_names[0]!r}. Check that both come "
+            "from the same run and use the same barcode format."
+        )
+    if len(shared) < len(cell_names):
+        logger.warning(
+            "Lane %s: only %d of %d cells have guide counts; the rest will be "
+            "unassigned.",
+            lane_id,
+            len(shared),
+            len(cell_names),
+        )
+    # Reindex onto the expression cells so both objects share an order, filling
+    # absent barcodes with zeros rather than dropping those cells.
+    from scipy import sparse
+
+    matrix = sparse.csr_matrix((len(cell_names), g.n_vars), dtype=g.X.dtype)
+    pos = pd.Index(g.obs_names).get_indexer(cell_names)
+    found = pos >= 0
+    matrix[np.where(found)[0]] = sparse.csr_matrix(g.X)[pos[found]]
+    out = ad.AnnData(X=matrix, var=g.var.copy())
+    out.obs_names = cell_names
+    out.var_names = g.var_names
+    logger.info(
+        "Lane %s: %d/%d cells matched a guide barcode", lane_id, int(found.sum()),
+        len(cell_names),
+    )
+    return out
 
 
 def _check_mtx_dir(path: Path, lane_id: str) -> None:

@@ -51,6 +51,13 @@ class InputConfig:
 
     mode: str = "auto"  # auto | mtx | h5ad
     mtx_dirs: Union[Dict[str, str], List[str], None] = None
+    #: Companion guide-count MTX directories, ``{lane_id: path}``, for pipelines
+    #: that quantify gene expression and guides separately (STARsolo runs
+    #: typically produce ``GEX/`` and ``sgRNA/`` side by side rather than one
+    #: matrix with a ``feature_types`` column). Keys must match
+    #: :attr:`mtx_dirs`. The guide matrix often covers the whole barcode
+    #: whitelist, so it is subset to the cells present in the expression matrix.
+    guide_mtx_dirs: Optional[Dict[str, str]] = None
     h5ad: Optional[str] = None
     guide_h5ad: Optional[str] = None
     guide_obs_column: Optional[str] = None
@@ -472,6 +479,20 @@ class Config:
         has_h5ad = bool(inp.h5ad)
         if inp.mode == "mtx" and not has_mtx:
             raise ValueError("input.mode is 'mtx' but input.mtx_dirs is empty")
+
+        if inp.guide_mtx_dirs:
+            missing = set(inp.resolved_mtx_dirs()) - set(inp.guide_mtx_dirs)
+            if missing:
+                raise ValueError(
+                    "input.guide_mtx_dirs must cover every lane in input.mtx_dirs; "
+                    f"missing {sorted(missing)}"
+                )
+            extra = set(inp.guide_mtx_dirs) - set(inp.resolved_mtx_dirs())
+            if extra:
+                raise ValueError(
+                    f"input.guide_mtx_dirs has lane(s) not in input.mtx_dirs: "
+                    f"{sorted(extra)}"
+                )
         if inp.mode == "h5ad" and not has_h5ad:
             raise ValueError("input.mode is 'h5ad' but input.h5ad is not set")
         if inp.mode == "auto":
