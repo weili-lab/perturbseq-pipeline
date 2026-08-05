@@ -111,6 +111,17 @@ ps_score:
   lda_n_pcs: 40
   lda_max_genes: 5000
   lda_highlight_threshold: 0.8
+lochness:
+  enabled: true
+  genotype_key: target_gene
+  n_neighbors: 300
+  n_pcs: 20
+  use_rep: null
+  recompute_neighbors: true
+  min_cells_per_target: 10
+  enrichment_cut: 0.5
+  noise_delta: 0.0
+  top_n_report: 12
 report:
   title: Perturb-seq analysis report
   embed_figures: true

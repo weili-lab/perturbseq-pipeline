@@ -375,7 +375,68 @@ demo lane (the expected direction: stronger knockdown, more confirmed cells) and
 **+0.12** on the PS_python demo subset. The figure reports what the data show
 rather than asserting the methods validate each other.
 
-## 8. Figures and the report
+## 8. lochNESS neighbourhood enrichment
+
+Ported from [pertTF](https://github.com/davidliwei/pertTF)
+(`perttf.model.composition_change_analysis`). For every cell and every
+perturbation *g*:
+
+```
+lochNESS(cell, g) = local_fraction(g) / overall_fraction(g) - 1
+```
+
+`local_fraction` is the share of that cell's *k* nearest neighbours carrying
+*g*; `overall_fraction` is *g*'s share of the dataset. **0** means the
+perturbation turns up among the neighbours exactly as often as chance predicts,
+**> 0** locally over-represented, **< 0** under-represented.
+
+### How it differs from section 6
+
+Cluster enrichment tests discrete Leiden clusters and returns a significance
+call. lochNESS is continuous and cluster-free, so it also sees structure that
+lies inside a single cluster or straddles two — and it maps *where* a
+perturbation accumulates rather than only *whether* it does. The two agreeing is
+a good sign; structure visible only in lochNESS is worth following up.
+
+### Neighbourhood size
+
+`k = 300` by default, following pertTF. The clustering graph (`k = 15`) is far
+too small here: with ~60 targets, a 15-cell neighbourhood is expected to hold a
+quarter of a cell of any one perturbation, so the local fraction would be pure
+sampling noise. A dedicated graph is therefore built, on `X_pca_harmony` when
+batch correction ran so neighbourhoods are not defined by lane.
+
+### Two departures from the reference
+
+**Vectorized.** The original loops over every cell in Python with a `.loc`
+lookup per neighbourhood. Each perturbation here is one sparse matrix-vector
+product — what makes 60 targets over 100k cells practical.
+
+**Denominator.** The original divides by the requested `n_neighbors`, while a
+scanpy graph stores `n_neighbors - 1` entries per row (self excluded). Dividing
+by the actual neighbour count removes a systematic under-estimate; at k = 300
+the difference is ~0.3%.
+
+`tests/test_pipeline.py` cross-checks the vectorized score against a literal
+port of the reference loop: identical to 1e-16 with correlation 1.000000 once
+the denominator difference is undone.
+
+### What it found on the demo lane
+
+| Target | mean lochNESS in own cells | peak cluster |
+|---|---|---|
+| SALL4 | 10.64 | 9 |
+| SMARCC1 | 10.12 | 7 |
+| EZH2 | 3.67 | 9 |
+| CTNNB1 | 3.07 | 9 |
+| NANOG | 2.96 | 9 |
+| SUZ12 | 2.66 | 9 |
+
+This independently reproduces the section-6 result — SMARCC1 in cluster 7, the
+PRC2/pluripotency group in cluster 9 — by a completely different route, with no
+clusters and no significance test involved.
+
+## 9. Figures and the report
 
 Every figure passes through a registry that records its path, title, caption and
 section, so a figure cannot be produced without being reachable from the report.

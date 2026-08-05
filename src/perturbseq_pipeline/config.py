@@ -321,6 +321,44 @@ class PSScoreConfig:
 
 
 @dataclass
+class LochnessConfig:
+    """lochNESS: local neighbourhood enrichment of each perturbation.
+
+    Ported from pertTF. For every cell and perturbation it reports the share of
+    that cell's neighbours carrying the perturbation, divided by the
+    perturbation's overall share, minus one — so 0 is background frequency and
+    positive means locally over-represented.
+
+    Complements the cluster-enrichment section: that one tests discrete Leiden
+    clusters, this one is continuous and cluster-free, so it also sees structure
+    within or across clusters.
+    """
+
+    enabled: bool = True
+    #: ``obs`` column holding the perturbation identity.
+    genotype_key: str = "target_gene"
+    #: Neighbourhood size. The clustering graph (k=15) is far too small: with
+    #: dozens of targets a neighbourhood would be expected to hold a fraction of
+    #: a cell of any one perturbation. pertTF uses 300.
+    n_neighbors: int = 300
+    #: Components used for the neighbour search.
+    n_pcs: int = 20
+    #: Embedding to search in. Null prefers the batch-corrected ``X_pca_harmony``
+    #: when present, so neighbourhoods are not defined by lane.
+    use_rep: Optional[str] = None
+    recompute_neighbors: bool = True
+    min_cells_per_target: int = 10
+    #: A cell counts as "enriched" for a perturbation above this score.
+    enrichment_cut: float = 0.5
+    #: Gaussian noise added to the score. pertTF uses 1e-4 to stabilise model
+    #: training; left at 0 here, where the scores are read rather than trained on.
+    noise_delta: float = 0.0
+    #: Targets whose per-cell maps are embedded in the report; every scored
+    #: target still gets a figure on disk.
+    top_n_report: int = 12
+
+
+@dataclass
 class ReportConfig:
     """HTML report assembly."""
 
@@ -383,6 +421,7 @@ class Config:
     perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
     enrichment: EnrichmentConfig = field(default_factory=EnrichmentConfig)
     ps_score: PSScoreConfig = field(default_factory=PSScoreConfig)
+    lochness: LochnessConfig = field(default_factory=LochnessConfig)
     report: ReportConfig = field(default_factory=ReportConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
 
@@ -487,6 +526,9 @@ class Config:
             )
         if not 0 < self.enrichment.fdr_alpha < 1:
             raise ValueError("enrichment.fdr_alpha must be in (0, 1)")
+
+        if self.lochness.n_neighbors < 2:
+            raise ValueError("lochness.n_neighbors must be at least 2")
 
         if self.ps_score.expression_cut not in ("mean", "median", "quantile"):
             raise ValueError(

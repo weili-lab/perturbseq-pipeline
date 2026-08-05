@@ -890,6 +890,133 @@ def test_guide_table_unmatched_barcodes_raise_a_clear_error(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# lochNESS
+# ---------------------------------------------------------------------------
+
+
+def _reference_lochness(adata, target_genotype, n_neighbors, nn_name="nn"):
+    """Literal port of pertTF's calculate_lonESS_score, for cross-checking.
+
+    Kept deliberately close to the original — per-cell loop and all — so the
+    vectorized implementation is validated against the published behaviour
+    rather than against a reimplementation that shares its assumptions.
+    """
+    overall = adata.obs["genotype"].value_counts(normalize=True).to_dict()
+    nn_key = f"{nn_name}_distances"
+    out = []
+    for cell_id in adata.obs_names:
+        i = adata.obs_names.get_loc(cell_id)
+        g = target_genotype if target_genotype is not None else adata.obs.loc[cell_id, "genotype"]
+        idx = adata.obsp[nn_key][i, :].nonzero()[1]
+        cnt = sum(adata.obs.loc[adata.obs.index[idx], "genotype"] == g)
+        denom = overall[g] if overall[g] else 1e-4
+        out.append(cnt / n_neighbors / denom - 1)
+    return np.array(out)
+
+
+@pytest.fixture(scope="module")
+def lochness_toy():
+    import anndata as ad
+    import scanpy as sc
+
+    rng = np.random.default_rng(0)
+    n, k = 400, 30
+    a = ad.AnnData(X=rng.normal(size=(n, 30)).astype("float32"))
+    a.obs["genotype"] = pd.Categorical(
+        rng.choice(["G1", "G2", "G3", "NT"], size=n, p=[0.3, 0.25, 0.2, 0.25])
+    )
+    sc.pp.pca(a, n_comps=10)
+    sc.pp.neighbors(a, n_neighbors=k, n_pcs=10, key_added="nn")
+    return a, k
+
+
+def test_lochness_matches_the_perttf_reference(lochness_toy):
+    """The vectorized score must reproduce pertTF's per-cell loop exactly."""
+    from perturbseq_pipeline.lochness import _adjacency, lochness_score
+
+    a, k = lochness_toy
+    adj, counts = _adjacency(sp.csr_matrix(a.obsp["nn_distances"]))
+    overall = a.obs["genotype"].value_counts(normalize=True).to_dict()
+    labels = a.obs["genotype"].astype(str).to_numpy()
+
+    for gene in ("G1", "G2", "G3", "NT"):
+        ref = _reference_lochness(a, gene, n_neighbors=k)
+        ours = lochness_score(adj, counts, (labels == gene).astype(float), overall[gene])
+        # We divide by the actual neighbour count (k-1, self excluded); the
+        # reference divides by the requested k. Undo that to compare directly.
+        rescaled = (ours + 1) * (counts[0] / k) - 1
+        assert np.allclose(rescaled, ref, atol=1e-10), gene
+        assert np.corrcoef(ref, ours)[0, 1] > 0.9999
+
+
+def test_lochness_is_zero_at_background_frequency():
+    """A perturbation spread uniformly must score ~0 everywhere."""
+    from perturbseq_pipeline.lochness import _adjacency, lochness_score
+
+    # Every cell neighbours every other; the local fraction then equals the
+    # overall fraction by construction.
+    n = 50
+    dense = np.ones((n, n)) - np.eye(n)
+    adj, counts = _adjacency(sp.csr_matrix(dense))
+    indicator = np.zeros(n)
+    indicator[:10] = 1  # 20% of cells
+    score = lochness_score(adj, counts, indicator, 10 / n)
+    # A cell carrying the perturbation sees the other 9 among 49 neighbours.
+    assert np.allclose(score[10:], (10 / 49) / 0.2 - 1, atol=1e-9)
+    assert np.abs(np.mean(score)) < 0.15
+
+
+def test_lochness_detects_a_planted_neighbourhood():
+    """A perturbation confined to one region must score strongly positive."""
+    from perturbseq_pipeline.lochness import _adjacency, lochness_score
+
+    # Two disconnected blocks; the perturbation fills the first.
+    n = 60
+    dense = np.zeros((n, n))
+    dense[:30, :30] = 1
+    dense[30:, 30:] = 1
+    np.fill_diagonal(dense, 0)
+    adj, counts = _adjacency(sp.csr_matrix(dense))
+    indicator = np.zeros(n)
+    indicator[:30] = 1
+    score = lochness_score(adj, counts, indicator, 0.5)
+    assert score[:30].mean() > 0.9, "inside the block it should be ~+1"
+    assert score[30:].mean() < -0.9, "outside it should be ~-1"
+
+
+def test_lochness_end_to_end_outputs(mtx_run):
+    summary = pd.read_csv(mtx_run.outdir / "tables" / "lochness.csv")
+    assert len(summary) > 0
+    for col in (
+        "target_gene",
+        "mean_lochness_in_own_cells",
+        "pct_cells_enriched",
+        "max_lochness",
+    ):
+        assert col in summary.columns
+
+    maps = list((mtx_run.figures_dir / "lochness" / "per_target").glob("*.png"))
+    assert len(maps) == len(summary), "one map per scored perturbation"
+    overview = {p.stem for p in (mtx_run.figures_dir / "lochness").glob("*.png")}
+    assert {"lochness_self_enrichment", "lochness_distributions"} <= overview
+
+    obs = mtx_run.adata.obs
+    assert "lochness_self" in obs.columns
+    assert any(c.startswith("lochness_") and c != "lochness_self" for c in obs.columns)
+
+
+def test_lochness_can_be_disabled(synthetic, tmp_path):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    cfg = _base_config(synthetic, tmp_path / "run_noloch")
+    cfg.lochness.enabled = False
+    result = run_pipeline(cfg)
+    assert not (result.outdir / "figures" / "lochness").exists()
+    assert not (result.outdir / "tables" / "lochness.csv").exists()
+    assert result.report.is_file()
+
+
+# ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
 

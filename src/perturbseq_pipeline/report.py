@@ -29,6 +29,8 @@ from .plots import (
     SECTION_GUIDES,
     SECTION_PER_GENE,
     SECTION_PERTURBATION,
+    SECTION_LOCHNESS,
+    SECTION_LOCHNESS_PER_TARGET,
     SECTION_PS,
     SECTION_PS_LDA,
     SECTION_PS_PER_TARGET,
@@ -51,6 +53,7 @@ class ReportInputs:
     perturbation: PerturbationResults
     enrichment: object = None
     ps: object = None
+    lochness: object = None
     tables: Dict[str, pd.DataFrame] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
     summary_cards: List[tuple] = field(default_factory=list)
@@ -120,6 +123,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         "ps": reg.by_section(SECTION_PS),
         "ps_per_target": reg.by_section(SECTION_PS_PER_TARGET),
         "ps_lda": reg.by_section(SECTION_PS_LDA),
+        "lochness": reg.by_section(SECTION_LOCHNESS),
+        "lochness_per_target": reg.by_section(SECTION_LOCHNESS_PER_TARGET),
     }
     extras = reg.extras(SECTION_PER_GENE)
     enrich_extras = reg.extras(SECTION_ENRICH_PER_TARGET)
@@ -136,6 +141,7 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "manifest",
             "enrichment",
             "ps_score",
+            "lochness",
         )
     }
     tables_html["outputs"] = _df_to_html(
@@ -198,6 +204,21 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
     ps_extras = reg.extras(SECTION_PS_PER_TARGET)
     ps_lda_extras = reg.extras(SECTION_PS_LDA)
 
+    loch = inputs.lochness
+    loch_ctx = None
+    if loch is not None and not loch.summary.empty:
+        s0 = loch.summary
+        loch_ctx = {
+            "n_targets": int(len(s0)),
+            "k": loch.n_neighbors,
+            "cut": cfg.lochness.enrichment_cut,
+            "best": s0.iloc[0]["target_gene"],
+            "best_score": f"{s0.iloc[0]['mean_lochness_in_own_cells']:.2f}",
+            "n_positive": int((s0["mean_lochness_in_own_cells"] > cfg.lochness.enrichment_cut).sum()),
+            "genotype_key": cfg.lochness.genotype_key,
+        }
+    loch_extras = reg.extras(SECTION_LOCHNESS_PER_TARGET)
+
     controls_described = " and ".join(CONTROL_LABELS[c] for c in res.controls_used)
     primary_fallback = res.primary_control != cfg.perturbation.primary_control
 
@@ -245,6 +266,12 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             f"{r.name}.{cfg.report.figure_format}" for r in ps_lda_extras
         ],
         ps_lda_dir=str(reg.figdir / SECTION_PS_LDA),
+        lochness=loch_ctx,
+        lochness_extras=loch_extras,
+        lochness_extra_names=[
+            f"{r.name}.{cfg.report.figure_format}" for r in loch_extras
+        ],
+        lochness_dir=str(reg.figdir / SECTION_LOCHNESS_PER_TARGET),
         enrichment=enrichment_ctx,
         enrichment_extras=enrich_extras,
         enrichment_extra_names=[

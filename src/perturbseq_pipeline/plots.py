@@ -57,6 +57,8 @@ SECTION_ENRICH_PER_TARGET = "enrichment/per_target"
 SECTION_PS = "ps_score"
 SECTION_PS_PER_TARGET = "ps_score/per_target"
 SECTION_PS_LDA = "ps_score/lda"
+SECTION_LOCHNESS = "lochness"
+SECTION_LOCHNESS_PER_TARGET = "lochness/per_target"
 
 _CLASS_COLORS = {
     CLASS_TARGETING: "#2b6cb0",
@@ -1506,4 +1508,191 @@ def plot_ps_lda(expr, results, reg: FigureRegistry, cfg: Config) -> None:
         "Wrote %d per-target LDA figures (%d shown in the report)",
         n_targets,
         min(top_n, n_targets),
+    )
+
+
+# ---------------------------------------------------------------------------
+# lochNESS figures
+# ---------------------------------------------------------------------------
+
+
+def plot_lochness(expr, results, reg: FigureRegistry, cfg: Config) -> None:
+    """Overview figures plus one per-perturbation lochNESS map."""
+    if results is None or results.summary.empty:
+        return
+    lcfg = cfg.lochness
+    summary = results.summary
+    coords = np.asarray(expr.obsm["X_umap"]) if "X_umap" in expr.obsm else None
+
+    # --- 1. self-enrichment ranking ---------------------------------------
+    fig, ax = plt.subplots(figsize=(max(6, 0.20 * len(summary)), 4.0))
+    vals = summary["mean_lochness_in_own_cells"].to_numpy(dtype=float)
+    ax.bar(range(len(summary)), vals,
+           color=["#c53030" if v > lcfg.enrichment_cut else "#a0aec0" for v in vals])
+    ax.axhline(0, color="black", lw=0.8)
+    ax.axhline(lcfg.enrichment_cut, color="#718096", ls="--", lw=1)
+    ax.set_xticks(range(len(summary)))
+    ax.set_xticklabels(summary["target_gene"], rotation=90, fontsize=6)
+    ax.set_ylabel("mean lochNESS in its own cells")
+    ax.set_title(
+        f"How strongly each perturbation clusters with itself "
+        f"(k = {results.n_neighbors} neighbours)",
+        fontsize=10,
+    )
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "lochness_self_enrichment",
+        SECTION_LOCHNESS,
+        "Self-enrichment per perturbation",
+        "Average lochNESS of each perturbation's own cells. 0 means its cells sit "
+        "among neighbours at the background rate; a positive value means cells "
+        "sharing the perturbation are neighbours far more often than chance, i.e. "
+        "the perturbation drives a distinct state.",
+    )
+
+    # --- 2. score distribution per target ---------------------------------
+    top = list(summary["target_gene"].head(30))
+    long = pd.DataFrame(
+        {
+            "lochNESS": np.concatenate([results.scores[g] for g in top]),
+            "target": np.concatenate([[g] * expr.n_obs for g in top]),
+        }
+    )
+    fig, ax = plt.subplots(figsize=(max(6, 0.34 * len(top)), 4.2))
+    sns.violinplot(data=long, x="target", y="lochNESS", ax=ax, cut=0,
+                   inner=None, linewidth=0.5, order=top)
+    ax.axhline(0, color="black", lw=0.8)
+    ax.tick_params(axis="x", rotation=90, labelsize=6)
+    ax.set_xlabel("")
+    ax.set_title("lochNESS across all cells, per perturbation (top 30)", fontsize=10)
+    sns.despine(ax=ax)
+    fig.tight_layout()
+    reg.save(
+        fig,
+        "lochness_distributions",
+        SECTION_LOCHNESS,
+        "lochNESS distribution per perturbation",
+        "Each violin is one perturbation's score across every cell. A long upper "
+        "tail means a subset of the manifold is strongly enriched for it, even "
+        "when most cells sit at background.",
+    )
+
+    # --- 3. target x cluster heatmap --------------------------------------
+    if not results.by_cluster.empty:
+        mat = results.by_cluster
+        try:
+            mat = mat[sorted(mat.columns, key=lambda c: (float(c), c))]
+        except ValueError:
+            mat = mat[sorted(mat.columns)]
+        order = _order_by_similarity(mat)
+        mat = mat.loc[order]
+        lim = float(np.nanpercentile(np.abs(mat.to_numpy()), 98)) or 1.0
+        fig, ax = plt.subplots(
+            figsize=(max(6, 0.55 * mat.shape[1] + 4), max(4, 0.20 * len(mat) + 1.5))
+        )
+        im = ax.imshow(mat.to_numpy(), cmap="RdBu_r", vmin=-lim, vmax=lim, aspect="auto")
+        ax.set_xticks(range(mat.shape[1]))
+        ax.set_xticklabels(mat.columns, fontsize=8)
+        ax.set_yticks(range(len(mat)))
+        ax.set_yticklabels(mat.index, fontsize=6)
+        ax.set_xlabel(f"Cluster ({CLUSTER_KEY})")
+        plt.colorbar(im, ax=ax, shrink=0.6, label="mean lochNESS")
+        ax.set_title("Mean lochNESS per cluster", fontsize=11)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            "lochness_by_cluster",
+            SECTION_LOCHNESS,
+            "lochNESS by cluster",
+            "Average score of each perturbation within each cluster, rows ordered "
+            "by similarity. This is the continuous counterpart of the enrichment "
+            "test in section 4 — agreement between the two is a good sign, and "
+            "structure here that the cluster test missed is worth a look.",
+        )
+
+    # --- 4. self score on the embedding -----------------------------------
+    if coords is not None and results.self_score is not None:
+        vals = np.asarray(results.self_score, dtype=float)
+        ok = np.isfinite(vals)
+        fig, ax = plt.subplots(figsize=(6.4, 5.2))
+        ax.scatter(coords[~ok, 0], coords[~ok, 1], s=3, color="#edf2f7",
+                   linewidths=0, rasterized=True, label="unassigned / ambiguous")
+        lim = float(np.nanpercentile(np.abs(vals[ok]), 98)) or 1.0
+        sc_ = ax.scatter(coords[ok, 0], coords[ok, 1], s=5, c=vals[ok],
+                         cmap="RdBu_r", vmin=-lim, vmax=lim, linewidths=0,
+                         rasterized=True)
+        plt.colorbar(sc_, ax=ax, shrink=0.75, label="lochNESS (own perturbation)")
+        ax.set_title("Each cell scored for its own perturbation", fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.legend(fontsize=7, frameon=False, loc="best", markerscale=3)
+        sns.despine(ax=ax, left=True, bottom=True)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            "lochness_self_umap",
+            SECTION_LOCHNESS,
+            "Self lochNESS on the embedding",
+            "Red regions are where cells sit among others sharing their own "
+            "perturbation more often than chance — the parts of the manifold that "
+            "perturbation identity actually organises.",
+        )
+
+    # --- 5. one map per perturbation --------------------------------------
+    if coords is None:
+        return
+    top_n = lcfg.top_n_report
+    for rank, gene in enumerate(summary["target_gene"]):
+        score = np.asarray(results.scores[gene], dtype=float)
+        ok = np.isfinite(score)
+        lim = float(np.nanpercentile(np.abs(score[ok]), 99)) or 1.0
+        own = expr.obs[cfg.lochness.genotype_key].astype(str).to_numpy() == gene
+
+        fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.8))
+
+        ax = axes[0]
+        srt = np.argsort(np.nan_to_num(score))
+        sc_ = ax.scatter(coords[srt, 0], coords[srt, 1], s=4,
+                         c=np.nan_to_num(score[srt]), cmap="RdBu_r",
+                         vmin=-lim, vmax=lim, linewidths=0, rasterized=True)
+        plt.colorbar(sc_, ax=ax, shrink=0.78, label="lochNESS")
+        ax.set_title(f"{gene}: neighbourhood enrichment", fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        sns.despine(ax=ax, left=True, bottom=True)
+
+        ax = axes[1]
+        ax.scatter(coords[~own, 0], coords[~own, 1], s=3, color="#e2e8f0",
+                   linewidths=0, rasterized=True, label="other cells")
+        ax.scatter(coords[own, 0], coords[own, 1], s=12, color="#c53030",
+                   linewidths=0.2, edgecolors="#2d3748", rasterized=True,
+                   label=f"{gene} cells")
+        ax.set_title(f"where the {int(own.sum()):,} {gene} cells actually are",
+                     fontsize=10)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.legend(fontsize=7, frameon=False, loc="best", markerscale=2)
+        sns.despine(ax=ax, left=True, bottom=True)
+
+        row = summary[summary["target_gene"] == gene].iloc[0]
+        fig.tight_layout()
+        reg.save(
+            fig,
+            f"lochness_{gene}",
+            SECTION_LOCHNESS_PER_TARGET,
+            f"{gene} lochNESS map",
+            f"Left: every cell scored for how enriched {gene} is among its "
+            f"neighbours (red = enriched, blue = depleted). Right: the cells "
+            f"actually carrying {gene}, for comparison. Mean score in its own "
+            f"cells {row['mean_lochness_in_own_cells']:.2f}; "
+            f"{row['pct_cells_enriched']:.1f}% of all cells score above "
+            f"{lcfg.enrichment_cut}.",
+            in_report=rank < top_n,
+        )
+    logger.info(
+        "Wrote %d per-perturbation lochNESS maps (%d shown in the report)",
+        len(summary),
+        min(top_n, len(summary)),
     )

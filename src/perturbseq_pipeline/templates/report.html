@@ -83,6 +83,7 @@
   <a href="#perturbation">3. Perturbation strength</a>
   {% if enrichment %}<a href="#enrichment">4. Cluster enrichment</a>{% endif %}
   {% if ps %}<a href="#ps">5. Per-cell response</a>{% endif %}
+  {% if lochness %}<a href="#lochness">6. lochNESS</a>{% endif %}
   <a href="#outputs">Outputs</a>
 </p>
 
@@ -350,6 +351,55 @@
 {% elif ps_note %}
 <h2 id="ps">5. Per-cell perturbation response</h2>
 <div class="warn"><b>This section was skipped.</b> {{ ps_note }}</div>
+{% endif %}
+
+<!-- ===================== 6. lochNESS ===================== -->
+{% if lochness %}
+<h2 id="lochness">6. lochNESS neighbourhood enrichment</h2>
+<p class="lede">
+  Section 4 asks whether a perturbation is over-represented in a discrete
+  cluster. <b>lochNESS</b>, ported from
+  <a href="https://github.com/davidliwei/pertTF">pertTF</a>, asks the same
+  question continuously and without clusters: for every cell it takes the share
+  of that cell's <b>{{ lochness.k }}</b> nearest neighbours carrying a given
+  perturbation, divides by that perturbation's share of the whole dataset, and
+  subtracts one.
+</p>
+
+<div class="note">
+  <b>0</b> means the perturbation appears among a cell's neighbours exactly as
+  often as its overall frequency would predict. <b>Above 0</b> means locally
+  over-represented, <b>below 0</b> under-represented. Because the score is
+  per-cell, it maps <i>where</i> in the manifold a perturbation accumulates —
+  including structure that sits inside one cluster, or straddles two, which the
+  cluster test in section 4 cannot see.
+</div>
+
+<div class="cards">
+  <div class="card"><div class="v">{{ lochness.n_targets }}</div><div class="k">Perturbations scored</div></div>
+  <div class="card"><div class="v">{{ lochness.k }}</div><div class="k">Neighbours per cell</div></div>
+  <div class="card"><div class="v">{{ lochness.n_positive }}</div><div class="k">Self-enriched above {{ lochness.cut }}</div></div>
+  <div class="card"><div class="v">{{ lochness.best }}</div><div class="k">Strongest ({{ lochness.best_score }})</div></div>
+</div>
+
+<h3>6.1 Across all perturbations</h3>
+{% for f in figures.lochness %}{{ render_figure(f) }}{% endfor %}
+
+<h3>6.2 Per-target summary</h3>
+<div class="scroll">{{ tables.lochness }}</div>
+
+<h3>6.3 Per-perturbation maps</h3>
+{% for f in figures.lochness_per_target %}{{ render_figure(f) }}{% endfor %}
+
+{% if lochness_extras %}
+<div class="note">
+  <b>{{ lochness_extras|length }} further per-perturbation maps</b> are in
+  <code>{{ lochness_dir }}</code>:
+  <div class="filelist">
+    {% for name in lochness_extra_names %}<div>{{ name }}</div>{% endfor %}
+  </div>
+</div>
+{% endif %}
 {% endif %}
 
 <!-- ===================== Outputs ===================== -->

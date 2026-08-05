@@ -78,6 +78,18 @@ GB are not worth it.
 Without the extra the stage is skipped and the report says so; set
 `ps_score.require: true` to make it a hard failure.
 
+**6 · lochNESS neighbourhood enrichment**
+Ported from [pertTF](https://github.com/davidliwei/pertTF). For every cell and
+every perturbation, the share of that cell's 300 nearest neighbours carrying the
+perturbation, divided by its overall share, minus one — so 0 is background and
+positive means locally over-represented. Continuous and cluster-free, so unlike
+section 4 it also sees structure inside a cluster or across two, and it maps
+*where* a perturbation accumulates. One figure per perturbation.
+
+On the demo lane it independently reproduces the section-4 result (SALL4 and
+SMARCC1 strongest; EZH2, SUZ12, NANOG and CTNNB1 all peaking in the same
+cluster) without using clusters at all.
+
 ---
 
 ## Install
