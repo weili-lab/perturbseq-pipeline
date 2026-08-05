@@ -284,23 +284,65 @@ output:
 
 ## Guide calling
 
-A cell is assigned to its top guide when that guide has at least
-`guides.min_umi` UMIs **and** exceeds the runner-up by `guides.dominance_ratio`:
+For each cell the pipeline takes the highest and second-highest guide counts and
+applies one rule:
+
+```python
+assigned = (top >= guides.min_umi) and (top > guides.dominance_ratio * second)
+```
+
+| Condition | Label in `obs['target_gene']` |
+|---|---|
+| top count is 0 | `unassigned` |
+| top ≥ `min_umi` **and** top > `dominance_ratio` × second | the guide's target gene |
+| anything else | **`ambiguous`** |
+
+There is no separate "ambiguous threshold" — `ambiguous` is the fallback when a
+cell *has* guide counts but fails the rule, either because its best guide is too
+weak or because the runner-up is too close to it.
 
 ```yaml
 guides:
-  min_umi: 3
-  dominance_ratio: 2.0
+  min_umi: 3            # the top guide must reach this many UMIs
+  dominance_ratio: 2.0  # ...and exceed the runner-up by this factor
+  detection_threshold: 3         # MOI statistics only — NOT used for assignment
   target_split_delims: ["_", "-", "."]   # AFF4_P1P2_1 -> AFF4
-  target_regex: null                     # override when targets contain a delimiter
+  target_regex: null             # override when targets contain a delimiter
+  ambiguous_label: ambiguous     # the strings written into obs
+  unassigned_label: unassigned
+  ntc_label: non-targeting
 ```
 
-Cells failing the dominance rule are `ambiguous`; cells with no guide counts are
-`unassigned`. Both stay in the object and are reported — they are never silently
-dropped.
+### Tuning the ambiguous rate
+
+**`dominance_ratio` is the knob that matters.** At 2.0 a cell with counts 40 and
+25 is ambiguous (40 < 50); at 1.5 it would be assigned. That one value drives
+most of the ambiguous rate — 24% of cells on the ESC screen. The prototype
+notebooks used 1.2 in one and 2.0 in the other, which is why it is an explicit
+key rather than a number buried in the code.
+
+`min_umi` matters less on deeply sequenced guide libraries, where the top guide
+is usually far above 3, but raising it is the right move when guide capture is
+shallow and low-count calls are unreliable.
+
+Watch out for **`detection_threshold`**, which looks similar but is only used for
+the guides-per-cell and MOI statistics in the QC section. Changing it does not
+move a single assignment.
+
+### What happens to ambiguous cells
+
+They are **kept** in the object and counted in the report, but excluded from
+perturbation testing and from *both* control groups. So loosening
+`dominance_ratio` does not merely relabel cells — it moves them into the tested
+populations. On the four-lane run that category holds 27,566 cells (25.4%),
+so the setting has real leverage over every downstream result.
+
+The same rule is applied when guides arrive as a barcode table
+(`input.guide_table`), reading the same two keys, so a run from a count matrix
+and a run from a barcode table produce identical per-cell calls.
 
 Non-targeting guides are detected by pattern (`non`, `non_targeting`, `NTC`,
-`scramble`, …) and used as the preferred control group.
+`scramble`, …) via `guides.ntc_patterns` and used as the preferred control group.
 
 ---
 
