@@ -1,0 +1,70 @@
+# Full 4-lane run of the ESC TF Perturb-seq screen (134,365 cells).
+run:
+  name: full_4lane_ESC_TF
+  outdir: /content/perturbseq-pipeline/results/full_4lane
+  seed: 0
+
+input:
+  mode: mtx
+  mtx_dirs:
+    S1lane1: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/raw_counts/filtered_feature_bc_matrix_S1lane1"
+    S1lane2: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/raw_counts/filtered_feature_bc_matrix_S1lane2"
+    S2lane1: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/raw_counts/filtered_feature_bc_matrix_S2lane1"
+    S2lane2: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/raw_counts/filtered_feature_bc_matrix_S2lane2"
+
+metadata:
+  file: demo/sample_metadata.csv
+  key_column: lane_id
+
+qc:
+  min_genes_per_cell: 200
+  min_cells_per_gene: 3
+  min_genes_final: 1000
+  max_pct_mt: 20.0
+
+guides:
+  min_umi: 3
+  dominance_ratio: 2.0
+
+cluster:
+  n_top_genes: 3000
+  n_pcs: 50
+  leiden_resolution: 1.0
+  # Four lanes from two samples: correct for lane before clustering, otherwise
+  # a lane effect would masquerade as a perturbation phenotype downstream.
+  batch_key: lane_id
+
+perturbation:
+  controls: ["ntc", "other"]
+  primary_control: ntc
+  min_cells_per_target: 10
+  top_n_report: 12
+
+enrichment:
+  enabled: true
+  primary_control: other
+  # The Cochran-Mantel-Haenszel path, which exists for exactly this case:
+  # a cluster that merely differs in size between lanes must not read as a
+  # perturbation effect.
+  stratify_by: lane_id
+  top_n_report: 12
+
+ps_score:
+  enabled: true
+  require: true
+  expression_cut: mean
+  compute_lda_umap: true
+  lda_max_genes: 5000
+  top_n_report: 12
+
+report:
+  title: "Perturb-seq report — ESC TF screen, all 4 lanes"
+
+output:
+  h5ad_name: full_4lane_processed.h5ad
+  report_name: report.html
+  # Keep the h5ad inside the results folder so the whole folder can be copied
+  # to Drive as one unit.
+  large_file_dir: null
+  write_guide_table: true
+  archive: true

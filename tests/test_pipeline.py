@@ -379,6 +379,44 @@ def test_h5ad_without_any_guide_information_gives_a_clear_error(synthetic, tmp_p
         run_pipeline(cfg)
 
 
+def test_harmony_returns_a_correctly_shaped_embedding():
+    """Guards a silent orientation flip in the Harmony integration.
+
+    harmonypy 2.0 changed ``Z_corr`` from (components x cells) to
+    (cells x components), while scanpy's wrapper still transposes it — which
+    yields an embedding of the wrong shape and fails only once anndata tries to
+    store it, part-way through a long run.
+    """
+    pytest.importorskip("harmonypy")
+    import anndata as ad
+
+    from perturbseq_pipeline.cluster import _run_harmony
+
+    rng = np.random.default_rng(0)
+    adata = ad.AnnData(X=rng.normal(size=(300, 20)).astype("float32"))
+    adata.obs["lane_id"] = pd.Categorical(["L1"] * 150 + ["L2"] * 150)
+    adata.obsm["X_pca"] = rng.normal(size=(300, 15))
+
+    cfg = Config()
+    cfg.cluster.batch_key = "lane_id"
+    key = _run_harmony(adata, cfg)
+    assert key == "X_pca_harmony"
+    assert adata.obsm[key].shape == (300, 15)
+
+
+def test_harmony_is_skipped_for_a_single_batch():
+    pytest.importorskip("harmonypy")
+    import anndata as ad
+
+    from perturbseq_pipeline.cluster import _run_harmony
+
+    adata = ad.AnnData(X=np.zeros((10, 5), dtype="float32"))
+    adata.obs["lane_id"] = pd.Categorical(["L1"] * 10)
+    cfg = Config()
+    cfg.cluster.batch_key = "lane_id"
+    assert _run_harmony(adata, cfg) is None
+
+
 # ---------------------------------------------------------------------------
 # Cluster enrichment
 # ---------------------------------------------------------------------------

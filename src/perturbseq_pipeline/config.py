@@ -309,6 +309,12 @@ class PSScoreConfig:
     compute_lda_umap: bool = True
     #: Principal components fed to the LDA.
     lda_n_pcs: int = 40
+    #: Genes handed to the LDA step. ``pertps.compute_lda_umap`` scales whatever
+    #: it is given, which densifies the matrix — on a 134k-cell run the full
+    #: gene set would need tens of GB. Restricting to this many highly variable
+    #: genes first keeps it affordable; the step then picks its own 2,000 from
+    #: them, so the embedding is materially unchanged. Null disables the cap.
+    lda_max_genes: Optional[int] = 5000
     #: Cells scoring at least this are highlighted as high-confidence
     #: knockdowns on the global LDA summary.
     lda_highlight_threshold: float = 0.8

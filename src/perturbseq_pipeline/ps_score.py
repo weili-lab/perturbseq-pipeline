@@ -344,9 +344,16 @@ def _compute_lda_embedding(analyzer, expr: ad.AnnData, targets: List[str], cfg: 
 
     logger.info(
         "Building the supervised LDA embedding over %d target(s) — this scales "
-        "the full matrix and runs a second UMAP, so it takes a few minutes",
+        "the matrix and runs a second UMAP, so it takes a few minutes",
         len(targets),
     )
+
+    # compute_lda_umap scales whatever it is handed, which densifies it. Cap the
+    # gene set first so a large run does not need tens of GB for a step that
+    # selects 2,000 HVGs internally anyway.
+    original = analyzer.adata
+    capped = _cap_genes_for_lda(original, expr, pcfg.lda_max_genes)
+    analyzer.adata = capped
     try:
         analyzer.compute_lda_umap(targets, n_pcs=pcfg.lda_n_pcs)
     except Exception as exc:
@@ -354,9 +361,11 @@ def _compute_lda_embedding(analyzer, expr: ad.AnnData, targets: List[str], cfg: 
             f"the LDA embedding could not be built ({type(exc).__name__}: {exc})"
         )
         logger.warning("Skipping the LDA embedding: %s", exc)
+        analyzer.adata = original
         return None, None, note
 
     work = analyzer.adata
+    analyzer.adata = original
     if "X_lda_umap" not in work.obsm:
         return None, None, "pertps did not return an X_lda_umap embedding"
 
@@ -389,6 +398,34 @@ def _expression_cut(reference: pd.Series, pcfg) -> float:
     if pcfg.expression_cut == "quantile":
         return float(np.quantile(values, pcfg.expression_cut_quantile))
     return float(np.mean(values))
+
+
+def _cap_genes_for_lda(work: ad.AnnData, expr: ad.AnnData, max_genes: Optional[int]):
+    """Restrict the LDA input to the most variable genes.
+
+    Reuses the pipeline's own ``highly_variable`` flags when available so the
+    selection matches the rest of the run, and falls back to the highest-variance
+    genes otherwise.
+    """
+    if not max_genes or work.n_vars <= max_genes:
+        return work
+    if "highly_variable" in expr.var.columns:
+        keep = expr.var_names[expr.var["highly_variable"].to_numpy()]
+        if len(keep) > max_genes:
+            keep = keep[:max_genes]
+    else:
+        import scanpy as sc
+
+        tmp = work.copy()
+        sc.pp.highly_variable_genes(tmp, n_top_genes=max_genes)
+        keep = tmp.var_names[tmp.var["highly_variable"].to_numpy()]
+    keep = [g for g in keep if g in set(work.var_names)]
+    logger.info(
+        "Capping the LDA input at %d genes (from %d) to bound memory",
+        len(keep),
+        work.n_vars,
+    )
+    return work[:, keep].copy()
 
 
 def _pct_control_expressing(expr: ad.AnnData, gene: str) -> float:

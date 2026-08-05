@@ -109,6 +109,7 @@ ps_score:
   top_n_report: 12
   compute_lda_umap: true
   lda_n_pcs: 40
+  lda_max_genes: 5000
   lda_highlight_threshold: 0.8
 report:
   title: Perturb-seq analysis report

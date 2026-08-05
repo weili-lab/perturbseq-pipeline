@@ -70,13 +70,22 @@ def embed_and_cluster(expr: ad.AnnData, cfg: Config) -> ad.AnnData:
         logger.info("Regressing out %s", c.regress_out)
         sc.pp.regress_out(expr, c.regress_out)
 
-    if c.scale_max_value is not None:
-        # Scaling is applied to X only; lognorm layer keeps the tested values.
-        sc.pp.scale(expr, max_value=c.scale_max_value)
-
     n_pcs = int(min(c.n_pcs, expr.n_obs - 1, expr.n_vars - 1))
-    sc.tl.pca(expr, n_comps=n_pcs, svd_solver="arpack", random_state=cfg.run.seed)
-    logger.info("PCA: %d components", n_pcs)
+    if c.scale_max_value is not None:
+        # Scale and run PCA on the highly variable genes only. scanpy's PCA
+        # already restricts itself to them, so scaling the full matrix just
+        # densifies every gene for nothing: at 134k cells that is tens of GB
+        # rather than the ~1.5 GB the HVG block needs. Results are unchanged.
+        hvg = expr.var["highly_variable"].to_numpy()
+        sub = expr[:, hvg].copy()
+        sc.pp.scale(sub, max_value=c.scale_max_value)
+        sc.tl.pca(sub, n_comps=n_pcs, svd_solver="arpack", random_state=cfg.run.seed)
+        expr.obsm["X_pca"] = sub.obsm["X_pca"]
+        expr.uns["pca"] = sub.uns["pca"]
+        del sub
+    else:
+        sc.tl.pca(expr, n_comps=n_pcs, svd_solver="arpack", random_state=cfg.run.seed)
+    logger.info("PCA: %d components (on %d HVGs)", n_pcs, int(expr.var["highly_variable"].sum()))
 
     use_rep = "X_pca"
     if c.batch_key:
@@ -104,8 +113,9 @@ def embed_and_cluster(expr: ad.AnnData, cfg: Config) -> ad.AnnData:
         "Leiden clustering at resolution %.2f: %d clusters", c.leiden_resolution, n_clusters
     )
 
-    # X is only needed scaled for PCA; restore log-normalized values so that any
-    # downstream plotting of gene expression shows interpretable units.
+    # X was never scaled in place (scaling happens on an HVG copy), so it still
+    # holds log-normalized values; this only matters if a future change moves
+    # the scaling back onto ``expr`` itself.
     if LOGNORM_LAYER in expr.layers:
         expr.X = expr.layers[LOGNORM_LAYER].copy()
     return expr
@@ -125,13 +135,39 @@ def _run_harmony(expr: ad.AnnData, cfg: Config) -> Optional[str]:
         )
         return None
     try:
-        sc.external.pp.harmony_integrate(expr, key, adjusted_basis="X_pca_harmony")
+        import harmonypy
     except (ImportError, ModuleNotFoundError) as exc:
         raise RuntimeError(
             "Harmony batch correction requested but harmonypy is not installed. "
             "Install it with: pip install 'perturbseq-pipeline[harmony]'"
         ) from exc
-    logger.info("Harmony batch correction on %r", key)
+
+    # harmonypy is called directly rather than through
+    # ``sc.external.pp.harmony_integrate``: that wrapper transposes ``Z_corr``,
+    # which was correct while harmonypy returned a (components x cells) matrix
+    # but silently produces a wrongly-shaped embedding since harmonypy 2.0
+    # switched to (cells x components).
+    embedding = np.asarray(expr.obsm["X_pca"], dtype=np.float64)
+    out = harmonypy.run_harmony(embedding, expr.obs, key)
+    corrected = np.asarray(out.result() if hasattr(out, "result") else out.Z_corr)
+
+    # Orient defensively, so a future flip in either direction cannot pass.
+    if corrected.shape != embedding.shape:
+        if corrected.T.shape == embedding.shape:
+            corrected = corrected.T
+        else:
+            raise RuntimeError(
+                "Harmony returned an embedding of shape "
+                f"{corrected.shape}, which matches neither "
+                f"{embedding.shape} nor its transpose."
+            )
+
+    expr.obsm["X_pca_harmony"] = corrected
+    logger.info(
+        "Harmony batch correction on %r across %d batches",
+        key,
+        expr.obs[key].nunique(),
+    )
     return "X_pca_harmony"
 
 
