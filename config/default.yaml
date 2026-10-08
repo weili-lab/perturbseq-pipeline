@@ -17,7 +17,7 @@ input:
   - Custom
   - CRISPR Guide Capture
   var_names: gene_symbols
-  cache_mtx: true
+  cache_mtx: false
   cell_id_format: suffix
   counts_layer: null
   normalized_layer: null
@@ -252,6 +252,7 @@ modules:
     min_genes: 5
     max_genes: 1500
     top_terms_per_program: 5
+    require: false
 ps_score:
   enabled: false
   require: false

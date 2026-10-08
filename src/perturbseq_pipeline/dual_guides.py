@@ -103,6 +103,8 @@ CONSTRUCT_SINGLE_NTC = "targeting_plus_ntc"
 CONSTRUCT_NTC = "ntc_pair"
 CONSTRUCT_TWO_TARGETS = "dual_target_construct"
 CONSTRUCT_NONE = "none"
+#: ``require_complete_pair: false`` only — one resolved scaffold slot carried the assignment.
+CONSTRUCT_SINGLE_SLOT = "single_slot"
 
 DETAIL_DESIGNED_DUAL = "designed_dual_targeting_construct"
 DETAIL_DESIGNED_SINGLE_NTC = "designed_targeting_plus_ntc_construct"
@@ -116,6 +118,7 @@ DETAIL_PROVISIONAL_SAME = "provisional_same_target_rule"
 DETAIL_PROVISIONAL_NTC = "provisional_ntc_pair_rule"
 DETAIL_PROVISIONAL_TARGET_NTC = "provisional_targeting_plus_ntc"
 DETAIL_PROVISIONAL_TWO = "two_different_targets"
+DETAIL_INCOMPLETE_SINGLE_SLOT = "incomplete_pair_single_slot_accepted"
 
 OBS_SG_CLASS = "single_guide_diagnostic_class"
 OBS_SG_TARGET = "single_guide_diagnostic_target"
@@ -455,7 +458,26 @@ def assign_guide_pairs(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad.
     set_amb(A["multiple"] & ~C["multiple"], STATUS_AMBIGUOUS_SLOT.format(c=cA))
     set_amb(C["multiple"] & ~A["multiple"], STATUS_AMBIGUOUS_SLOT.format(c=cC))
     incomplete = (A["resolved"] & C["none"]) | (C["resolved"] & A["none"])
-    set_amb(incomplete, STATUS_INCOMPLETE)
+    if gcfg.require_complete_pair:
+        set_amb(incomplete, STATUS_INCOMPLETE)
+    else:
+        # require_complete_pair: false — the single resolved slot carries the
+        # assignment (its target, or NTC). The status stays ``incomplete_pair`` so
+        # the QC tables keep counting these cells; construct_type / detail say the
+        # cell was accepted on one slot.
+        for S in (A, C):
+            m = incomplete & S["resolved"]
+            if not m.any():
+                continue
+            gi = S["idx"][m]
+            is_ntc = np.asarray(guide_ntc[gi], dtype=bool)
+            status[m] = STATUS_INCOMPLETE
+            detail[m] = DETAIL_INCOMPLETE_SINGLE_SLOT
+            construct_type[m] = CONSTRUCT_SINGLE_SLOT
+            guide_call[m] = guide_ids[gi]
+            pair_call[m] = guide_ids[gi]
+            klass[m] = np.where(is_ntc, CLASS_NTC, CLASS_TARGETING)
+            target_call[m] = np.where(is_ntc, gcfg.ntc_label, guide_targets[gi])
     both = A["resolved"] & C["resolved"]
     idx = np.flatnonzero(both)
     if idx.size:
@@ -624,7 +646,14 @@ def assign_guide_pairs(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad.
         expr.obs[OBS_TARGET_SYMBOL] = pd.Categorical(sym.astype(str))
     expr.obs[OBS_CONSTRUCT_TYPE] = pd.Categorical(
         construct_type.astype(str),
-        categories=[CONSTRUCT_DUAL, CONSTRUCT_SINGLE_NTC, CONSTRUCT_NTC, CONSTRUCT_TWO_TARGETS, CONSTRUCT_NONE],
+        categories=[
+            CONSTRUCT_DUAL,
+            CONSTRUCT_SINGLE_NTC,
+            CONSTRUCT_NTC,
+            CONSTRUCT_TWO_TARGETS,
+            CONSTRUCT_SINGLE_SLOT,
+            CONSTRUCT_NONE,
+        ],
     )
     if gcfg.single_guide_diagnostic:
         sg_assigned = (g_top >= min_umi) & (g_top > float(gcfg.dominance_ratio) * g_second)
@@ -669,7 +698,9 @@ def assign_guide_pairs(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad.
             "explicit reference: valid pair = the two slot features share a designed construct id (designed dual-targeting, designed targeting+NTC and designed NTC-NTC constructs are assigned; "
             "two different targets -> dual_target_ambiguous; any other non-designed combination -> unresolved_pair, see pair_resolution_detail); "
             "provisional rule (no ids): same target -> pair_targeting, both NTC -> pair_non_targeting, targeting+NTC per ntc_partner_policy; "
-            "incomplete, scaffold-ambiguous, dual-target and unresolved cells are excluded from primary testing"
+            "scaffold-ambiguous, dual-target and unresolved cells are excluded from primary testing; incomplete pairs "
+            "(one resolved slot) are excluded when require_complete_pair is true and assigned from the resolved slot "
+            "(construct_type single_slot) when it is false"
         ),
     }
     for obj in {id(aligned): aligned, id(guides): guides}.values():

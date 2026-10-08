@@ -1,11 +1,14 @@
 """Companion Markdown report for one pipeline run (``output.report_markdown_name``).
 
 Mirrors the HTML report: run summary, expression QC before / after filtering,
-pair-guide QC, ambiguity / unresolved assignments, single-guide diagnostic,
-PCA / UMAP / Leiden, ECDF, perturbation-expression results, target support and
-reproducibility. Figures are referenced by their path relative to the run
-directory (``figures/<section>/<name>.png``) so the file renders in any
-Markdown viewer next to the run outputs.
+guide assignment (single-guide) or pair-guide QC / ambiguity / single-guide
+diagnostic (pair mode), PCA / UMAP / Leiden, the perturbation-strength test of
+the assignment mode that actually ran, and the optional stages that produced a
+table in this run (cluster enrichment, modules / programs, PS scores, lochNESS,
+perturbation distance, master table). Sections are numbered in the order they
+appear. Figures are referenced by their path relative to the run directory
+(``figures/<section>/<name>.png``) so the file renders in any Markdown viewer
+next to the run outputs.
 """
 
 from __future__ import annotations
@@ -64,11 +67,40 @@ def _figs(
     return "\n".join(out) if out else "_no figures in this section_\n"
 
 
+class _Numbering:
+    """Sequential section numbers, so a disabled stage never leaves a gap."""
+
+    def __init__(self) -> None:
+        self.n = 0
+
+    def __call__(self, title: str) -> str:
+        self.n += 1
+        return f"## {self.n}. {title}"
+
+
+def _single_guide_perturbation_methods(cfg) -> str:
+    """Methods sentence for ``perturbation.py`` (single-guide assignment)."""
+    p = cfg.perturbation
+    controls = ", ".join(f"`{c}`" for c in p.controls)
+    return (
+        "Test: for every target gene that is also in the expression matrix, its own log-normalised "
+        "expression (`layers['lognorm']`) in perturbed cells vs control cells — two-sided Kolmogorov-Smirnov "
+        "(and a one-sided Mann-Whitney, perturbed < control) per control definition "
+        f"({controls}; primary `{p.primary_control}`: `ntc` = non-targeting cells, `other` = cells assigned to a "
+        "different target); log2FC on de-logged means with a pseudocount of 0.01; BH FDR across all tested targets "
+        f"within each control arm; effective = `ks_fdr_{p.primary_control} < {p.fdr_alpha}` and "
+        f"`log2fc_{p.primary_control} < {p.max_log2fc_for_hit}`; minimum {p.min_cells_per_target} perturbed cells "
+        f"and {p.min_control_cells} control cells. Targets absent from the matrix or not detectably expressed "
+        "in controls are listed as skipped, not scored."
+    )
+
+
 def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
     cfg, reg, tables = inputs.cfg, inputs.registry, inputs.tables
     run_dir = Path(cfg.run.outdir)
     T = lambda k, n=60: md_table(tables.get(k), n)
     pair_mode = "pair_assignment_per_lane" in tables
+    H = _Numbering()
     L: List[str] = []
     L += [
         f"# {cfg.report.title}",
@@ -86,13 +118,14 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         f"- input source: {inputs.input_source}",
         f"- sample metadata: `{inputs.metadata_source or 'none'}`",
         f"- guide source: {inputs.guide_source_text}",
+        f"- guide assignment mode: `{cfg.guides.assignment_mode}`",
         "",
     ]
     if inputs.warnings:
         L += ["### Warnings", ""] + [f"- {w}" for w in inputs.warnings] + [""]
     # ---- expression QC --------------------------------------------------------------------------
     L += [
-        "## 1. Expression QC before filtering",
+        H("Expression QC before filtering"),
         "",
         f"Thresholds: permissive gene filter >= {cfg.qc.min_genes_per_cell} genes, final gene filter >= {cfg.qc.min_genes_final} genes, mitochondrial < {cfg.qc.max_pct_mt} %, genes kept if in >= {cfg.qc.min_cells_per_gene} cells.",
         "",
@@ -117,7 +150,7 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         "",
     ]
     L += [
-        "## 2. Expression QC after filtering",
+        H("Expression QC after filtering"),
         "",
         T("qc_steps"),
         T("qc_summary"),
@@ -139,10 +172,10 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         ),
         "",
     ]
-    # ---- pair-guide QC ---------------------------------------------------------------------------
+    # ---- guide assignment ---------------------------------------------------------------------------
     if pair_mode:
         L += [
-            "## 3. Pair-guide QC",
+            H("Pair-guide QC"),
             "",
             f"Assignment rule: strongest guide per scaffold class needs >= {cfg.guides.min_umi} UMIs and > {cfg.guides.dominance_ratio} x the class runner-up; a cell is a designed pair only when the two slot features share a construct id "
             f"(pair reference `{cfg.guides.pair_map_file or cfg.guides.pair_reference}`). Primary labels: `pair_targeting` / `pair_targeting_plus_ntc` (designed targeting constructs) and `pair_non_targeting` (designed NTC pairs).",
@@ -179,7 +212,7 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         ]
         det = tables.get("pair_resolution_detail_per_lane")
         L += [
-            "## 4. Pair ambiguity and unresolved assignments",
+            H("Pair ambiguity and unresolved assignments"),
             "",
             "Every cell carries `pair_assignment_status` and `pair_resolution_detail`; only `perturbation_class in {targeting, non-targeting}` enters primary testing. Everything else (dual-target ambiguous, scaffold-ambiguous, incomplete, unresolved / not designed, unknown guide, below threshold, no guide) is excluded and listed here.",
             "",
@@ -200,7 +233,7 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "",
         ]
         L += [
-            "## 5. Single-guide diagnostic (not used for any result)",
+            H("Single-guide diagnostic (not used for any result)"),
             "",
             T("single_guide_diagnostic_vs_pair"),
             _figs(reg, SECTION_GUIDES, run_dir, ["single_guide_diagnostic_vs_pair_status"]),
@@ -208,19 +241,32 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         ]
     else:
         L += [
-            "## 3. Guide assignment",
+            H("Guide assignment"),
+            "",
+            f"Rule: a cell is assigned to its dominant guide when that guide has >= {cfg.guides.min_umi} UMIs and > {cfg.guides.dominance_ratio} x the runner-up"
+            + (
+                f" and the runner-up has <= {cfg.guides.max_second_umi} UMIs"
+                if cfg.guides.max_second_umi is not None and cfg.guides.max_second_umi >= 0
+                else ""
+            )
+            + "; cells with guide counts that fail the rule are `ambiguous`, cells without guide counts `unassigned`. Non-targeting guides give `perturbation_class = non-targeting`.",
             "",
             T("guide_qc"),
             T("guide_assignment"),
             T("assignment_per_lane"),
+            "Cells per guide (designed guides with zero cells included):",
+            "",
+            T("guide_representation", 80),
             _figs(reg, SECTION_GUIDES, run_dir),
             "",
         ]
     # ---- clustering --------------------------------------------------------------------------------
+    batch = cfg.cluster.batch_key
     L += [
-        "## 6. PCA, UMAP and Leiden clustering",
+        H("PCA, UMAP and Leiden clustering"),
         "",
-        f"Normalisation (target_sum = {cfg.cluster.target_sum or 'median'}), log1p, {cfg.cluster.n_top_genes} highly variable genes, {cfg.cluster.n_pcs} PCs, {cfg.cluster.n_neighbors} neighbours, UMAP (min_dist {cfg.cluster.umap_min_dist}), Leiden resolution {cfg.cluster.leiden_resolution}; batch_key = {cfg.cluster.batch_key} (no Harmony).",
+        f"Normalisation (target_sum = {cfg.cluster.target_sum or 'median'}), log1p, {cfg.cluster.n_top_genes} highly variable genes, {cfg.cluster.n_pcs} PCs, {cfg.cluster.n_neighbors} neighbours, UMAP (min_dist {cfg.cluster.umap_min_dist}), Leiden resolution {cfg.cluster.leiden_resolution}; "
+        + (f"Harmony batch correction on `{batch}`." if batch else "no batch correction (cluster.batch_key is null)."),
         "",
         "Cluster sizes:",
         "",
@@ -231,63 +277,160 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         _figs(reg, SECTION_CLUSTERING, run_dir),
         "",
     ]
-    # ---- perturbation -----------------------------------------------------------------------------
-    L += ["## 7. ECDF analysis", ""]
-    ecdf_dir = run_dir / "figures" / "perturbation" / "ecdf"
-    ecdfs = sorted(ecdf_dir.glob("ecdf_*.png")) if ecdf_dir.is_dir() else []
-    L += [
-        f"Per-target ECDFs (targeting pairs vs NTC pairs, per lane and pooled): {len(ecdfs)} figures in `figures/perturbation/ecdf/`.",
-        "",
-    ]
-    L += [f"- [{p.stem.replace('ecdf_', '')}]({p.relative_to(run_dir).as_posix()})" for p in ecdfs] + [""]
-    L += [
-        _figs(
-            reg,
-            SECTION_PERTURBATION,
-            run_dir,
-            ["pair_ecdf_overview_top_targets", "pair_level_expression_distributions"],
-        ),
-        "",
-    ]
-    L += [
-        "## 8. Perturbation-expression analysis (FDR, log2FC)",
-        "",
-        f"Test: two-sided Kolmogorov-Smirnov and one-sided Mann-Whitney (perturbed < control) on the target transcript (log-normalised expression), targeting pairs vs NTC pairs; log2FC on de-logged means with pseudocount; BH FDR within lane x control x stratum; "
-        f"hit = `fdr_ks < {cfg.perturbation.fdr_alpha}` and `log2fc < {cfg.perturbation.max_log2fc_for_hit}`; minimum {cfg.perturbation.min_cells_per_target} target cells and {cfg.perturbation.min_control_cells} control cells. "
-        "`neg_log10_fdr = -log10(max(fdr_ks, 1e-300))`.",
-        "",
-        "Hit counts per lane:",
-        "",
-        T("pair_perturbation_hit_counts_per_lane"),
-        "Target-level primary results (all lanes; full table `tables/pair_perturbation_by_target.csv` includes every stratum and the 'other targets' control):",
-        "",
-        T("pair_perturbation_primary", 200),
-        "Guide-pair (construct) level results (`tables/pair_perturbation_by_pair.csv`):",
-        "",
-        T("pair_perturbation_by_pair", 60),
-        _figs(
-            reg,
-            SECTION_PERTURBATION,
-            run_dir,
-            [
-                "pair_volcano_target_level",
-                "pair_volcano_pair_level",
-                "pair_waterfall_target_log2fc",
-                "pair_heatmap_log2fc_by_lane",
-                "pair_heatmap_neg_log10_fdr_by_lane",
-                "pair_hit_counts_per_lane",
-                "pair_level_hit_counts_per_lane",
-            ],
-        ),
-        "Pipeline single-assignment perturbation table (same labels, pipeline default statistics):",
-        "",
-        T("perturbation", 60),
-        T("skipped", 30),
-        "",
-    ]
-    L += ["## 9. Target support within this run", "", T("target_support_matrix", 80), ""]
+    # ---- perturbation strength ----------------------------------------------------------------------
+    if pair_mode:
+        L += [H("ECDF analysis"), ""]
+        ecdf_dir = run_dir / "figures" / "perturbation" / "ecdf"
+        ecdfs = sorted(ecdf_dir.glob("ecdf_*.png")) if ecdf_dir.is_dir() else []
+        L += [
+            f"Per-target ECDFs (targeting pairs vs NTC pairs, per lane and pooled): {len(ecdfs)} figures in `figures/perturbation/ecdf/`.",
+            "",
+        ]
+        L += [f"- [{p.stem.replace('ecdf_', '')}]({p.relative_to(run_dir).as_posix()})" for p in ecdfs] + [""]
+        L += [
+            _figs(
+                reg,
+                SECTION_PERTURBATION,
+                run_dir,
+                ["pair_ecdf_overview_top_targets", "pair_level_expression_distributions"],
+            ),
+            "",
+        ]
+        L += [
+            H("Perturbation-expression analysis (FDR, log2FC)"),
+            "",
+            f"Test: two-sided Kolmogorov-Smirnov and one-sided Mann-Whitney (perturbed < control) on the target transcript (log-normalised expression), targeting pairs vs NTC pairs; log2FC on de-logged means with pseudocount; BH FDR within lane x control x stratum; "
+            f"hit = `fdr_ks < {cfg.perturbation.fdr_alpha}` and `log2fc < {cfg.perturbation.max_log2fc_for_hit}`; minimum {cfg.perturbation.min_cells_per_target} target cells and {cfg.perturbation.min_control_cells} control cells. "
+            "`neg_log10_fdr = -log10(max(fdr_ks, 1e-300))`.",
+            "",
+            "Hit counts per lane:",
+            "",
+            T("pair_perturbation_hit_counts_per_lane"),
+            "Target-level primary results (all lanes; full table `tables/pair_perturbation_by_target.csv` includes every stratum and the 'other targets' control):",
+            "",
+            T("pair_perturbation_primary", 200),
+            "Guide-pair (construct) level results (`tables/pair_perturbation_by_pair.csv`):",
+            "",
+            T("pair_perturbation_by_pair", 60),
+            _figs(
+                reg,
+                SECTION_PERTURBATION,
+                run_dir,
+                [
+                    "pair_volcano_target_level",
+                    "pair_volcano_pair_level",
+                    "pair_waterfall_target_log2fc",
+                    "pair_heatmap_log2fc_by_lane",
+                    "pair_heatmap_neg_log10_fdr_by_lane",
+                    "pair_hit_counts_per_lane",
+                    "pair_level_hit_counts_per_lane",
+                ],
+            ),
+            "Pipeline single-assignment perturbation table (same labels, pipeline default statistics):",
+            "",
+            T("perturbation", 60),
+            T("skipped", 30),
+            "",
+        ]
+        if "target_support_matrix" in tables:
+            L += [H("Target support within this run"), "", T("target_support_matrix", 80), ""]
+    else:
+        L += [
+            H("Perturbation strength (target expression vs control)"),
+            "",
+            _single_guide_perturbation_methods(cfg),
+            "",
+            "Target-level results (ranked by the primary control; both control arms in the table):",
+            "",
+            T("perturbation", 80),
+            "Targets skipped (not in the matrix / not detectably expressed in controls / too few cells):",
+            "",
+            T("skipped", 40),
+            _figs(reg, SECTION_PERTURBATION, run_dir),
+            "",
+        ]
+    # ---- optional stages: only the ones that produced a table in this run -------------------------
     if "enrichment" in tables:
-        L += ["## 10. Cluster enrichment", "", T("enrichment", 60), ""]
+        e = cfg.enrichment
+        L += [
+            H("Cluster enrichment"),
+            "",
+            f"Fisher's exact test per (target, cluster) pair, BH FDR across all pairs within each control arm (controls {', '.join(f'`{c}`' for c in e.controls)}; primary `{e.primary_control}`), "
+            f"significant at FDR < {e.fdr_alpha}; minimum {e.min_cells_per_target} cells per target and {e.min_cells_per_cluster} per cluster"
+            + (f"; Cochran-Mantel-Haenszel stratified by `{e.stratify_by}`" if e.stratify_by else "")
+            + ". `guides_agreeing` counts the target's guides that individually shift in the same direction.",
+            "",
+            T("enrichment", 60),
+            "",
+        ]
+    if "cofunctional_modules" in tables or "gene_programs" in tables:
+        m = cfg.modules
+        L += [
+            H("Co-functional modules and gene programs"),
+            "",
+            f"Perturbation x gene log2FC-vs-`{m.control}` matrix; perturbations clustered into modules ({m.module_correlation} correlation), genes into programs ({m.program_correlation} correlation), {m.linkage_method} linkage. "
+            "Programs are annotated by over-representation against MSigDB collections downloaded at run time; `unannotated` means no term passed FDR, or (see Warnings) that the enrichment did not run.",
+            "",
+            "Programs:",
+            "",
+            T("program_summary" if "program_summary" in tables else "gene_programs", 40),
+            "Modules:",
+            "",
+            T("cofunctional_modules", 60),
+            T("tf_hubs", 30),
+            "",
+        ]
+    if "ps_score" in tables:
+        L += [
+            H("Per-cell perturbation scores (PS)"),
+            "",
+            f"PS_python per-cell perturbation score (threshold {cfg.ps_score.ps_threshold}) combined with the target's own expression ({cfg.ps_score.expression_cut} of controls as the cut): "
+            "`confirmed knockdown` = PS above threshold and target expression at or below the cut; `escaper` = PS above threshold but target still expressed.",
+            "",
+            T("ps_score", 60),
+            T("ps_skipped", 30),
+            "",
+        ]
+    if "lochness" in tables:
+        L += [
+            H("lochNESS neighbourhood enrichment"),
+            "",
+            "For every cell and perturbation: share of the cell's nearest neighbours (k = 300, PCA or Harmony space) carrying the perturbation, divided by the perturbation's overall share, minus one (0 = background, positive = locally over-represented). Cluster-free; ported from pertTF.",
+            "",
+            T("lochness", 60),
+            T("lochness_by_cluster", 40),
+            "",
+        ]
+    if "perturbation_distance" in tables:
+        d = cfg.distance
+        L += [
+            H("Perturbation distance vs control"),
+            "",
+            f"Energy distance (secondary metric: {d.secondary_metric or 'none'}) between perturbed and control cells in `{d.representation}`; "
+            f"permutation test ({d.n_permutations} label permutations) with BH FDR across targets, significant at FDR < {d.fdr_threshold}; "
+            f"cells subsampled deterministically (<= {d.max_cells_per_target} per target, <= {d.max_control_cells} controls; the target's own cells are never part of its control).",
+            "",
+            T("perturbation_distance", 60),
+            "",
+        ]
+    if "phenotype_modules" in tables:
+        L += [
+            H("Perturbation distance space and phenotype modules"),
+            "",
+            "Pairwise target x target distance matrix, PCoA coordinates, nearest phenotypic neighbours and hierarchical phenotype modules.",
+            "",
+            T("phenotype_modules", 60),
+            "",
+        ]
+    if "perturbation_meta" in tables:
+        L += [
+            H("Master perturbation table"),
+            "",
+            "Target-level join of the perturbation-strength, PS, lochNESS, distance and module results (`tables/perturbation_meta.csv`).",
+            "",
+            T("perturbation_meta", 80),
+            "",
+        ]
     # ---- reproducibility --------------------------------------------------------------------------
     L += (
         ["## Outputs and reproducibility", ""]

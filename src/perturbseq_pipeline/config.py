@@ -136,7 +136,11 @@ class InputConfig:
     gex_feature_type: str = "Gene Expression"
     guide_feature_types: List[str] = field(default_factory=lambda: ["Custom", "CRISPR Guide Capture"])
     var_names: str = "gene_symbols"
-    cache_mtx: bool = True
+    #: Let scanpy cache each 10x matrix as .h5ad for faster re-reads. Off by default:
+    #: the cache is keyed by path only (a regenerated matrix in the same directory
+    #: would be read from the stale copy) and it costs a full copy of every input.
+    #: When on, the cache lives in ``<run.outdir>/cache``.
+    cache_mtx: bool = False
     #: How cells from several MTX lanes are made unique: ``suffix`` (historical,
     #: ``<barcode>-<lane>``) or ``prefix`` (``<lane>_<barcode>``). Applied to
     #: single-lane runs too so per-lane and combined objects share one id scheme.
@@ -165,7 +169,16 @@ class InputConfig:
             for prefix in ("filtered_feature_bc_matrix_", "raw_feature_bc_matrix_"):
                 if lane.startswith(prefix):
                     lane = lane[len(prefix) :]
-            out[lane or Path(path).name] = path
+            lane = lane or Path(path).name
+            if lane in out:
+                # The usual Cell Ranger layout (<sample>/outs/filtered_feature_bc_matrix) gives
+                # every lane the same directory name; silently keeping the last one would
+                # analyse a single sample and report it as the whole run.
+                raise ValueError(
+                    f"input.mtx_dirs: {out[lane]!r} and {path!r} both resolve to lane id {lane!r}. "
+                    "Use the mapping form (lane_id: path) to give each lane its own id."
+                )
+            out[lane] = path
         return out
 
 
@@ -302,7 +315,10 @@ class GuideConfig:
     #: are derived from pairs). Must be true in pair mode.
     pair_assignment_primary: bool = True
     #: Require both scaffold slots to be resolved for any assignment; incomplete
-    #: pairs are labelled ``incomplete_pair`` (ambiguous).
+    #: pairs (one slot resolved, the other empty) are labelled ``incomplete_pair``
+    #: and kept out of primary testing (ambiguous). With ``false`` the single
+    #: resolved slot carries the assignment (its target, or non-targeting); the
+    #: status stays ``incomplete_pair`` and ``construct_type`` is ``single_slot``.
     require_complete_pair: bool = True
     #: What happens to unresolved pairs (``unresolved_pair`` etc.): ``exclude``
     #: keeps them in the object as ambiguous and out of primary testing.
@@ -502,6 +518,11 @@ class ProgramEnrichmentConfig:
     min_genes: int = 5
     max_genes: int = 1500
     top_terms_per_program: int = 5
+    #: The MSigDB collections are downloaded at run time. When the download (or the
+    #: enrichment) fails the stage normally continues with every program marked
+    #: ``unannotated`` and records the error in the report and run warnings; set
+    #: ``require: true`` to make such a failure abort the run instead.
+    require: bool = False
 
 
 @dataclass

@@ -51,7 +51,7 @@ without construct ids the provisional same-target rule applies.
 | `pair_targeting_plus_ntc` | designed targeting + NTC construct | `targeting` when `designed_targeting_plus_ntc_primary`, else `ambiguous` |
 | `pair_targeting_plus_ntc_provisional` | targeting + NTC without a construct id, `ntc_partner_policy: provisional_target` | `targeting` (flagged provisional) |
 | `dual_target_ambiguous` | two different targets | `ambiguous` |
-| `incomplete_pair` | one slot resolved, the other empty | `ambiguous` |
+| `incomplete_pair` | one slot resolved, the other empty | `ambiguous` (with `require_complete_pair: false`: assigned from the resolved slot, `construct_type = single_slot`) |
 | `ambiguous_scaffold_A` / `_C` / `_A_and_C` | several strong guides in a class | `ambiguous` |
 | `unknown_guide` | strong guides only among features without a scaffold class | `ambiguous` |
 | `below_min_umi` | counts present, none reaching `min_umi` | `ambiguous` |

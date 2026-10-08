@@ -488,6 +488,8 @@ in <code>tables/pair_perturbation_by_target.csv</code>; per-target ECDFs in <cod
         {% endfor %}
       </ul>
     </div>
+    {% elif modules.enrichment_error %}
+    <div style="font-size: 0.9em; color: #b45309; font-style: italic;">Pathway enrichment was <b>not run</b> ({{ modules.enrichment_error }}); this program is unannotated, not negative.</div>
     {% else %}
     <div style="font-size: 0.9em; color: #64748b; font-style: italic;">No significant pathway enrichment (FDR &gt; 0.05).</div>
     {% endif %}

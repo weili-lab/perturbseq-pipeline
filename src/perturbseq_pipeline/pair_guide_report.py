@@ -865,6 +865,10 @@ def clustering_pair_figures(expr: ad.AnnData, cfg: Config, registry: FigureRegis
             ),
         ),
     )
+    # require_complete_pair: false — cells assigned from a single resolved slot.
+    coarse = np.where(
+        (klass == CLASS_TARGETING) & (ctype == dg.CONSTRUCT_SINGLE_SLOT), "targeting: single resolved slot", coarse
+    )
     coarse = pd.Series(coarse, index=obs.index, name="pair_status_coarse")
     rng = np.random.default_rng(cfg.run.seed)
     panels = []
