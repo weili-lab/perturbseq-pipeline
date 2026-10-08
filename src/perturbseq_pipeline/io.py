@@ -91,6 +91,7 @@ def _load_mtx(cfg: Config) -> LoadedData:
     guide_dirs = cfg.input.guide_mtx_dirs or {}
     per_lane = []
     per_lane_guides = []
+    _configure_mtx_cache(cfg)
     for lane_id, path in lanes.items():
         p = Path(path)
         if not p.is_dir():
@@ -156,6 +157,24 @@ def _load_mtx(cfg: Config) -> LoadedData:
         return LoadedData(expr=adata, guides=guides_all, guide_source="matrix", lanes=dict(lanes))
     expr, guides = split_features(adata, cfg)
     return LoadedData(expr=expr, guides=guides, guide_source="matrix", lanes=dict(lanes))
+
+
+def _configure_mtx_cache(cfg: Config) -> Optional[Path]:
+    """Point scanpy's MTX cache at ``<run.outdir>/cache`` when ``input.cache_mtx`` is on.
+
+    scanpy keys the cache by the slugified input path and never checks whether the
+    matrix changed, so the cache is kept with the run that made it instead of in the
+    current working directory. Returns the cache directory, or None when caching is off.
+    """
+    if not cfg.input.cache_mtx:
+        return None
+    cache_dir = Path(cfg.run.outdir) / "cache"
+    sc.settings.cachedir = cache_dir
+    logger.info(
+        "input.cache_mtx is on: scanpy caches each matrix as .h5ad under %s (keyed by path; delete it if an input matrix was regenerated)",
+        cache_dir,
+    )
+    return cache_dir
 
 
 def _read_guide_mtx(path: Path, lane_id: str, cell_names: pd.Index, cfg: Config) -> ad.AnnData:
@@ -626,7 +645,9 @@ def write_guide_table(guides: ad.AnnData, expr: ad.AnnData, cfg: Config, path: P
     from scipy import sparse
 
     X = guides.layers["counts"] if "counts" in guides.layers else guides.X
-    X = sparse.csr_matrix(X)
+    # copy=True: csr_matrix(csr) shares the data buffers, and the threshold below
+    # would otherwise silently zero entries of the caller's guide matrix.
+    X = sparse.csr_matrix(X, copy=True)
     min_umi = max(int(cfg.output.guide_table_min_umi), 1)
     X.data[X.data < min_umi] = 0
     X.eliminate_zeros()
