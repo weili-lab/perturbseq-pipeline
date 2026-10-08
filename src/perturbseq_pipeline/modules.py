@@ -136,6 +136,8 @@ class ModulesResults:
     program_display_labels: Dict[str, str] = field(default_factory=dict)
     #: Compact summary table combining program sizes, top genes, and top enriched pathways.
     program_summary: pd.DataFrame = field(default_factory=pd.DataFrame)
+    #: Why program enrichment produced no result (gene-set download failed, ...); empty when it ran.
+    program_enrichment_error: str = ""
     #: Execution mode, useful in reports/debugging.
     execution_mode: str = "standard"
     note: str = ""
@@ -898,6 +900,7 @@ def compute_modules(expr: ad.AnnData, cfg: Config) -> Optional[ModulesResults]:
         ]
     )
     pe_cfg = getattr(mcfg, "program_enrichment", None)
+    enrichment_error = ""
     if pe_cfg is not None and getattr(pe_cfg, "enabled", True):
         try:
             enrichment_df, prog_annotations, prog_summary, display_labels = run_program_enrichment(
@@ -908,7 +911,18 @@ def compute_modules(expr: ad.AnnData, cfg: Config) -> Optional[ModulesResults]:
                 "modules: program enrichment complete (%d/%d programs annotated)", n_annotated, len(program_labels)
             )
         except Exception as exc:
-            logger.warning("modules: program enrichment failed: %s", exc)
+            # Typically the MSigDB download (no network on a compute node, a Broad
+            # server error). The programs stay 'unannotated' — which is NOT a negative
+            # result — so the error travels with the results into the report.
+            enrichment_error = f"{type(exc).__name__}: {exc}"
+            if getattr(pe_cfg, "require", False):
+                raise RuntimeError(
+                    "modules.program_enrichment.require is true and program enrichment failed: " + enrichment_error
+                ) from exc
+            logger.warning(
+                "modules: program enrichment was NOT run (%s); programs are reported as unannotated, not as negative",
+                enrichment_error,
+            )
     # Result
     note = (
         "STANDARD mode: original dense selected-gene implementation."
@@ -945,6 +959,7 @@ def compute_modules(expr: ad.AnnData, cfg: Config) -> Optional[ModulesResults]:
         program_annotations=prog_annotations,
         program_display_labels=display_labels,
         program_summary=prog_summary,
+        program_enrichment_error=enrichment_error,
         execution_mode=execution_mode,
         note=note,
     )

@@ -769,12 +769,20 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
             )
             if modules_result.note:
                 warnings.append("Modules: " + modules_result.note)
+            if modules_result.program_enrichment_error:
+                warnings.append(
+                    "Modules: program pathway enrichment was NOT run ("
+                    + modules_result.program_enrichment_error
+                    + "); every program is 'unannotated', which is not a negative result. "
+                    "Check network access to the MSigDB download or supply program_enrichment.custom_gmt_files."
+                )
             plots_mod.plot_modules(expr, modules_result, registry, cfg)
             _collect("modules/programs", cfg=cfg, large_mode=large_mode)
         if modules_result is not None and not modules_result.effect_matrix.empty:
-            status.mark(
-                "modules", STATUS_COMPLETED, f"{modules_result.n_modules} modules, {modules_result.n_programs} programs"
-            )
+            detail = f"{modules_result.n_modules} modules, {modules_result.n_programs} programs"
+            if modules_result.program_enrichment_error:
+                detail += "; program enrichment NOT run: " + modules_result.program_enrichment_error
+            status.mark("modules", STATUS_COMPLETED, detail)
         else:
             status.mark(
                 "modules", STATUS_SKIPPED, getattr(modules_result, "note", "") or "too few perturbations or genes"
@@ -1160,12 +1168,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     cfg = Config.from_yaml(args.config)
     if getattr(args, "lane", None):
         lane = args.lane
-        for attr in ("mtx_dirs", "guide_mtx_dirs"):
-            d = getattr(cfg.input, attr) or {}
-            if isinstance(d, dict):
-                if lane not in d:
-                    raise SystemExit(f"--lane {lane!r} is not a key of input.{attr}: {list(d)}")
-                setattr(cfg.input, attr, {lane: d[lane]})
+        mtx = cfg.input.resolved_mtx_dirs()
+        if not mtx:
+            raise SystemExit("--lane needs input.mtx_dirs (10x mode); it does not apply to h5ad input")
+        if lane not in mtx:
+            raise SystemExit(f"--lane {lane!r} is not a lane of input.mtx_dirs: {sorted(mtx)}")
+        cfg.input.mtx_dirs = {lane: mtx[lane]}
+        # Separate guide matrices are optional (the combined CellRanger layout has none).
+        guide_dirs = cfg.input.guide_mtx_dirs
+        if guide_dirs:
+            if lane not in guide_dirs:
+                raise SystemExit(f"--lane {lane!r} is not a key of input.guide_mtx_dirs: {sorted(guide_dirs)}")
+            cfg.input.guide_mtx_dirs = {lane: guide_dirs[lane]}
         if not args.outdir:
             cfg.run.outdir = str(Path(cfg.run.outdir) / "samples" / lane)
         cfg.run.name = f"{cfg.run.name}_{lane}"

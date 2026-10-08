@@ -270,7 +270,9 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
                 }
             )
         has_enrichment = bool(enr_df is not None and not enr_df.empty)
+        enrichment_error = str(getattr(mods, "program_enrichment_error", "") or "")
         modules_ctx = {
+            "enrichment_error": enrichment_error,
             "n_modules": mods.n_modules,
             "n_programs": mods.n_programs,
             "n_perturbations": int(mods.effect_matrix.shape[0]),
