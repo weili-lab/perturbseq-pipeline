@@ -113,7 +113,9 @@ output:
   # PS_python consumes. Verified to reproduce BARCODE_10x_Merged.txt exactly.
   write_guide_table: true
   guide_table_min_umi: 3
-  # Large outputs are moved here instead of being left next to the repo.
-  # On Colab this is the shared Drive folder; set to null to keep them local.
-  large_file_dir: "/content/drive/MyDrive/Colab Notebooks/scGPT/pancreatic/data/TF-PerturbSeq/small_scale/pipeline"
+  # Outputs above the threshold are moved here instead of being left in run.outdir.
+  # null keeps them local (the default). Point it at your own folder (e.g. a mounted
+  # Drive path on Colab) if the processed .h5ad should live elsewhere; the directory
+  # is created if needed and the file stays in run.outdir if it cannot be.
+  large_file_dir: null
   large_file_threshold_mb: 50.0
