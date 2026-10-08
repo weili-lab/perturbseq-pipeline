@@ -252,6 +252,7 @@ modules:
     min_genes: 5
     max_genes: 1500
     top_terms_per_program: 5
+    require: false
 ps_score:
   enabled: false
   require: false
