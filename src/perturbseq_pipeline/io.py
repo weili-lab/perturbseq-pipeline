@@ -803,7 +803,9 @@ def sanitize_h5ad_names(adata: ad.AnnData) -> List[Dict[str, str]]:
         store = getattr(adata, attr, None)
         if store is None:
             continue
-        ren = _rename(list(store.keys()), attr)
+        # anndata >= 0.13 exposes X as the layer keyed None; it is not a real
+        # layer name and must not be renamed (that would detach X) or recorded.
+        ren = _rename([k for k in store.keys() if k is not None], attr)
         for old_k, new_k in ren.items():
             store[new_k] = store[old_k]
             del store[old_k]
