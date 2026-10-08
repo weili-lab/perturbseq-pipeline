@@ -428,3 +428,56 @@ def test_lochness_large_mode_avoids_full_score_matrix(consistency_adata):
     assert np.isfinite(res.self_score).sum() > 0
     # res.scores should NOT contain full cell x target arrays for all targets
     assert len(res.scores) <= cfg.lochness.max_targets_in_obs
+
+
+# Regression: the LARGE 'other' reference must count EVERY targeting cell, including
+# targets below min_cells_per_target, exactly like the STANDARD per-cell mask does.
+
+
+def test_enrichment_large_other_reference_includes_subthreshold_targets(consistency_adata):
+    """Sub-threshold targets concentrated in one cluster must not bias the 'other' reference.
+
+    Before the fix, LARGE mode summed the per-cluster reference counts over testable
+    targets only while the reference total counted all targeting cells, so the
+    reference composition was wrong and enrichment calls could flip direction.
+    """
+    adata = consistency_adata.copy()
+    obs = adata.obs
+    # Relabel 15 TARGET_7 cells as five 3-cell targets (below min_cells_per_target=5)
+    # and park them all in cluster "0" so the bias is concentrated.
+    small = np.flatnonzero((obs[OBS_TARGET] == "TARGET_7").to_numpy())[:15]
+    targets = obs[OBS_TARGET].astype(str).to_numpy()
+    clusters = obs["leiden"].astype(str).to_numpy()
+    for k, idx in enumerate(small):
+        targets[idx] = f"TARGET_SMALL_{k // 3}"
+        clusters[idx] = "0"
+    obs[OBS_TARGET] = targets
+    obs["leiden"] = clusters
+    cfg_std = Config()
+    cfg_std.scaling.mode = "standard"
+    cfg_std.enrichment.min_cells_per_target = 5
+    cfg_std.enrichment.min_cells_per_cluster = 5
+    cfg_std.enrichment.controls = ["other"]
+    cfg_std.enrichment.primary_control = "other"
+    cfg_large = Config()
+    cfg_large.scaling.mode = "large"
+    cfg_large.enrichment.min_cells_per_target = 5
+    cfg_large.enrichment.min_cells_per_cluster = 5
+    cfg_large.enrichment.controls = ["other"]
+    cfg_large.enrichment.primary_control = "other"
+    res_std = _test_cluster_enrichment_standard(adata, cfg_std)
+    res_large = _test_cluster_enrichment_large(adata, cfg_large)
+    assert set(res_large.skipped["target_gene"]) == {f"TARGET_SMALL_{k}" for k in range(5)}
+    keys = ["target_gene", "cluster", "control"]
+    std_tbl = res_std.table.sort_values(keys).reset_index(drop=True)
+    large_tbl = res_large.table.sort_values(keys).reset_index(drop=True)
+    assert len(std_tbl) == len(large_tbl) > 0
+    for col in keys + ["n_target_cells", "n_in_cluster", "n_reference_cells", "direction"]:
+        assert (std_tbl[col] == large_tbl[col]).all(), col
+    np.testing.assert_allclose(std_tbl["pct_of_reference"], large_tbl["pct_of_reference"], rtol=1e-9)
+    np.testing.assert_allclose(std_tbl["odds_ratio"], large_tbl["odds_ratio"], rtol=1e-5)
+    np.testing.assert_allclose(std_tbl["pval"], large_tbl["pval"], rtol=1e-5, atol=1e-12)
+    # The reference composition table must also describe all targeting cells.
+    n_targeting = int((obs[OBS_CLASS] == CLASS_TARGETING).sum())
+    in_c0 = int(((obs[OBS_CLASS] == CLASS_TARGETING) & (obs["leiden"] == "0")).sum())
+    assert res_large.reference_composition["other"]["0"] == pytest.approx(100.0 * in_c0 / n_targeting)

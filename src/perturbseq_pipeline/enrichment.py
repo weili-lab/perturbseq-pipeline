@@ -609,18 +609,23 @@ def _test_cluster_enrichment_large(expr: ad.AnnData, cfg: Config) -> EnrichmentR
     (target_cluster_long, ntc_cluster_counts, target_stratum_long) = _build_large_count_tables(
         obs, cluster_key, (stratify_by if stratified else None)
     )
-    target_cluster = (
+    # Counts for EVERY targeting cell (including targets below min_cells_per_target):
+    # the 'other' reference (n_ref = total_targeting - n_target) counts those cells, so
+    # the per-cluster reference totals must include them too.
+    target_cluster_all = (
         target_cluster_long["count"]
         .unstack("cluster", fill_value=0)
-        .reindex(index=testable, columns=clusters, fill_value=0)
+        .reindex(columns=clusters, fill_value=0)
         .astype(np.int64)
     )
+    target_cluster = target_cluster_all.reindex(index=testable, fill_value=0)
     # Composition
     denominators = target_cluster.sum(axis=1).replace(0, np.nan)
     composition = target_cluster.div(denominators, axis=0) * 100.0
     composition = composition.fillna(0.0)
-    # Total targeting counts by cluster.
-    targeting_cluster_totals = target_cluster.sum(axis=0)
+    # Total targeting counts by cluster, over ALL targeting cells (not only testable
+    # targets) so that c_ref and d = n_ref - c_ref describe the same population.
+    targeting_cluster_totals = target_cluster_all.sum(axis=0)
     reference_composition: Dict[str, pd.Series] = {}
     if CONTROL_NTC in controls_used:
         ntc_counts = ntc_cluster_counts.reindex(clusters, fill_value=0)
