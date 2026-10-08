@@ -605,3 +605,24 @@ def test_h5ad_name_sanitisation_keeps_mapping(tmp_path):
     assert "lochness_X__rs1_" in back.obs.columns and "column_name_mapping" in back.uns
     assert (tmp_path / "t_column_name_mapping.csv").is_file()
     assert list(pd.read_csv(tmp_path / "t_column_name_mapping.csv")["original"]) == ["lochness_X (rs1)"]
+
+
+def test_require_complete_pair_false_assigns_from_the_resolved_slot():
+    """`require_complete_pair: false` is documented to accept one-slot cells; it used to be a no-op."""
+    from perturbseq_pipeline.dual_guides import CONSTRUCT_SINGLE_SLOT, DETAIL_INCOMPLETE_SINGLE_SLOT, OBS_CONSTRUCT_TYPE
+
+    expr, guides, cfg = _build()
+    cfg.guides.require_complete_pair = False
+    res = assign_guides(expr, guides, cfg)
+    o = res.obs.loc["missing_C"]  # only A1 (target X) resolved
+    assert o[OBS_PAIR_STATUS] == STATUS_INCOMPLETE
+    assert o[OBS_CLASS] == CLASS_TARGETING
+    assert o[OBS_TARGET] == "X"
+    assert o[OBS_CONSTRUCT_TYPE] == CONSTRUCT_SINGLE_SLOT
+    assert res.obs.loc["missing_C", "pair_resolution_detail"] == DETAIL_INCOMPLETE_SINGLE_SLOT
+    # every other cell is labelled exactly as with the default
+    expr2, guides2, cfg2 = _build()
+    ref = assign_guides(expr2, guides2, cfg2).obs
+    others = [c for c in ref.index if c != "missing_C"]
+    assert (res.obs.loc[others, OBS_CLASS].astype(str) == ref.loc[others, OBS_CLASS].astype(str)).all()
+    assert res.uns["guide_assignment"]["require_complete_pair"] is False

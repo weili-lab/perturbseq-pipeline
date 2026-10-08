@@ -300,3 +300,45 @@ def test_pipeline_end_to_end_program_enrichment(tmp_path):
     # Figure must be produced
     dot_plot = outdir / "figures" / "modules" / "program_enrichment.png"
     assert dot_plot.is_file(), "program_enrichment.png dot plot must exist"
+
+
+@pytest.mark.parametrize("failure", ["raises", "returns_none"])
+def test_enrichment_download_failure_is_reported_not_silent(monkeypatch, failure):
+    """An MSigDB download failure must surface as an error on the results (and in the
+    report / warnings), not as 'No significant pathway enrichment'."""
+    import gseapy
+
+    def broken(*args, **kwargs):
+        if failure == "raises":
+            raise ConnectionError("no route to data.broadinstitute.org")
+        return None
+
+    monkeypatch.setattr(gseapy.Msigdb, "get_gmt", broken)
+    adata, _, _, _ = _planted_biological_adata()
+    cfg = Config()
+    cfg.modules.gene_selection = "hvg"
+    cfg.modules.score_programs = False
+    cfg.modules.draw_networks = False
+    cfg.modules.n_programs = 2
+    cfg.modules.n_modules = 2
+    cfg.modules.min_cells_per_perturbation = 10
+    cfg.modules.min_perturbations = 4
+    cfg.modules.program_enrichment.enabled = True
+    res = compute_modules(adata, cfg)
+    assert res is not None
+    assert res.program_enrichment_error, "the failure must be recorded on the results"
+    assert all(a == "unannotated" for a in res.program_annotations.values())
+    # ... and with require: true the run stops instead of continuing
+    cfg.modules.program_enrichment.require = True
+    with pytest.raises(RuntimeError, match="program enrichment failed"):
+        compute_modules(adata, cfg)
+
+
+def test_enrichment_error_reaches_the_html_report(tmp_path):
+    from jinja2 import Environment, FileSystemLoader
+    from perturbseq_pipeline import report as report_mod
+
+    env = Environment(loader=FileSystemLoader(str(Path(report_mod.__file__).parent / "templates")))
+    src = (Path(report_mod.__file__).parent / "templates" / "report.html").read_text()
+    assert "modules.enrichment_error" in src
+    assert "not run" in src
