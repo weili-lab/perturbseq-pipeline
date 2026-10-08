@@ -65,6 +65,9 @@ logger = logging.getLogger(__name__)
 # Output columns
 
 OBS_TARGET = "target_gene"
+#: Per-cell label in the guide object's obs for cells absent from the analysed
+#: expression object (e.g. removed by QC before assignment).
+NOT_EVALUATED_LABEL = "not_evaluated"
 OBS_GUIDE = "guide_id"
 OBS_CLASS = "perturbation_class"
 
@@ -484,11 +487,20 @@ def _assign_from_matrix(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad
     expr.obs[OBS_NDETECTED] = detected
     expr.obs[OBS_GUIDE] = pd.Categorical(guide_call.astype(str))
     _finalize_labels(expr, target_call, gcfg, large_mode=large_mode)
-    # Guide metadata
-    aligned_guides.var["target_gene"] = guide_targets
-    aligned_guides.var["is_non_targeting"] = is_non_targeting(guide_targets, gcfg)
-    aligned_guides.obs[OBS_GUIDE] = expr.obs[OBS_GUIDE].to_numpy()
-    aligned_guides.obs[OBS_TARGET] = expr.obs[OBS_TARGET].to_numpy()
+    # Guide metadata — written to the ORIGINAL guides object as well as the aligned
+    # view: when QC removed cells the aligned object is a throwaway copy, and
+    # guide_representation(), write_guide_table() and uns['guide_target_genes'] all
+    # read the targets from the object the caller keeps.
+    ntc_flags = is_non_targeting(guide_targets, gcfg)
+    guide_calls = expr.obs[OBS_GUIDE].astype(str)
+    target_calls = expr.obs[OBS_TARGET].astype(str)
+    for obj in {id(aligned_guides): aligned_guides, id(guides): guides}.values():
+        obj.var["target_gene"] = guide_targets
+        obj.var["is_non_targeting"] = ntc_flags
+        # Cells that are not in the analysed expression object (QC-filtered) were
+        # never evaluated; say so rather than leaving them blank or 'unassigned'.
+        obj.obs[OBS_GUIDE] = guide_calls.reindex(obj.obs_names).fillna(NOT_EVALUATED_LABEL).to_numpy()
+        obj.obs[OBS_TARGET] = target_calls.reindex(obj.obs_names).fillna(NOT_EVALUATED_LABEL).to_numpy()
     _log_assignment(expr, cfg)
     return expr
 
