@@ -17,7 +17,7 @@ input:
   - Custom
   - CRISPR Guide Capture
   var_names: gene_symbols
-  cache_mtx: true
+  cache_mtx: false
   cell_id_format: suffix
   counts_layer: null
   normalized_layer: null
