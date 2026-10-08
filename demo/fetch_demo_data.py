@@ -119,16 +119,29 @@ def copy_from_source(source: Path, dest: Path) -> None:
         shutil.copytree(d, target)
 
 
-def write_config(mtx_dirs: Dict[str, Path], path: Path, metadata: Path, outdir: str) -> None:
-    """Write a runnable config with the discovered paths filled in."""
+def write_config(
+    mtx_dirs: Dict[str, Path],
+    path: Path,
+    metadata: Path,
+    outdir: str,
+    large_file_dir: str | None = None,
+    template: Path | None = None,
+) -> None:
+    """Write a runnable config with the discovered paths filled in.
+
+    ``output.large_file_dir`` is always set from ``large_file_dir`` (``None`` keeps
+    every output under ``outdir``) rather than inherited from the template, so a
+    generated config never moves files to a machine-specific path by accident.
+    """
     import yaml
     from perturbseq_pipeline.config import Config
 
-    template = REPO_ROOT / "config" / "demo.yaml"
+    template = Path(template) if template is not None else REPO_ROOT / "config" / "demo.yaml"
     cfg = Config.from_yaml(template) if template.is_file() else Config()
     cfg.input.mode = "mtx"
     cfg.input.mtx_dirs = {lane: str(p) for lane, p in sorted(mtx_dirs.items())}
     cfg.run.outdir = outdir
+    cfg.output.large_file_dir = str(large_file_dir) if large_file_dir else None
     cfg.metadata.file = str(metadata) if metadata.is_file() else None
     # Catch a lane/metadata mismatch now rather than part-way through a run.
     if cfg.metadata.file:
@@ -161,6 +174,11 @@ def main(argv: List[str] | None = None) -> int:
     p.add_argument("--write-config", default="config/demo.local.yaml", help="config file to write")
     p.add_argument("--outdir", default="results/demo", help="run.outdir for the written config")
     p.add_argument("--metadata", default=str(DEFAULT_METADATA), help="sample metadata CSV")
+    p.add_argument(
+        "--large-file-dir",
+        default=None,
+        help="move outputs above output.large_file_threshold_mb here (default: keep them in --outdir)",
+    )
     args = p.parse_args(argv)
     dest = Path(args.dest)
     if args.source:
@@ -180,7 +198,7 @@ def main(argv: List[str] | None = None) -> int:
     for lane, d in sorted(mtx_dirs.items()):
         size = sum(f.stat().st_size for f in d.iterdir() if f.is_file()) / 1e6
         print(f"  {lane:12s} {d}  ({size:.0f} MB)")
-    write_config(mtx_dirs, Path(args.write_config), Path(args.metadata), args.outdir)
+    write_config(mtx_dirs, Path(args.write_config), Path(args.metadata), args.outdir, args.large_file_dir)
     print("Now run:\n  perturbseq-pipeline run --config " + args.write_config)
     return 0
 

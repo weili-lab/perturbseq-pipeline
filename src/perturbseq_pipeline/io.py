@@ -940,17 +940,28 @@ def relocate_if_large(path: Path, cfg: Config) -> Path:
     if size_mb < cfg.output.large_file_threshold_mb:
         return path
     dest_dir = Path(cfg.output.large_file_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / path.name
-    logger.info("Moving %s (%.0f MB) to %s", path.name, size_mb, dest_dir)
     try:
-        path.replace(dest)
-    except OSError:
-        # Different filesystems (the usual case on Colab: local disk -> Drive).
-        import shutil
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("Moving %s (%.0f MB) to %s", path.name, size_mb, dest_dir)
+        try:
+            path.replace(dest)
+        except OSError:
+            # Different filesystems (the usual case on Colab: local disk -> Drive).
+            import shutil
 
-        shutil.copy2(path, dest)
-        path.unlink()
+            shutil.copy2(path, dest)
+            path.unlink()
+    except OSError as exc:
+        # A missing mount, a read-only or non-writable location, or a path that does
+        # not exist on this machine must not kill a run that has already produced
+        # the file: keep it where it is and say so.
+        logger.warning(
+            "output.large_file_dir=%r is not usable (%s); keeping %s in the run directory", str(dest_dir), exc, path
+        )
+        if path.is_file():
+            return path
+        return dest
     return dest
 
 
