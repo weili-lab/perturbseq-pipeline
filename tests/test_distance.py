@@ -341,3 +341,65 @@ def test_pipeline_run_with_distance_and_distance_space(tmp_path):
     assert (tables_dir / "perturbation_meta.csv").exists()
     # Verify H5AD is lean (does NOT contain full distance matrix in uns)
     assert "perturbation_distance_matrix" not in result.adata.uns
+
+
+# Regression: the 'other' control (all targeting cells) must exclude the focal target's
+# own cells, otherwise every target is partly compared against itself.
+
+
+def _other_control_adata(n_ntc: int = 100):
+    expr = _create_synthetic_anndata()
+    if n_ntc < 100:
+        expr = expr[np.r_[np.arange(n_ntc), np.arange(100, expr.n_obs)]].copy()
+    return expr
+
+
+@pytest.mark.parametrize("how", ["primary_control", "ntc_fallback"])
+def test_other_control_excludes_focal_target_cells(how):
+    cfg = Config()
+    cfg.distance.enabled = True
+    cfg.distance.min_cells = 30
+    cfg.distance.n_permutations = 200
+    cfg.distance.max_control_cells = 10_000
+    if how == "primary_control":
+        expr = _other_control_adata()
+        cfg.perturbation.primary_control = "other"
+    else:
+        # Too few NTC cells (< distance.min_cells) -> automatic fallback to 'other'.
+        expr = _other_control_adata(n_ntc=10)
+    results = compute_perturbation_distance(expr, cfg)
+    assert results is not None
+    assert results.control_used == "other"
+    tbl = results.table.set_index("target_gene")
+    n_targeting = int((expr.obs["perturbation_class"] == "targeting").sum())
+    # Each target's control = all OTHER targeting cells (pool minus its own cells).
+    assert tbl.loc["TargetA", "n_control"] == n_targeting - 80
+    assert tbl.loc["TargetB", "n_control"] == n_targeting - 80
+    assert tbl.loc["TargetSmall", "n_control"] == n_targeting - 40
+    # Exact expectation: each target against the OTHER targeting cells only
+    # (no subsampling here: every group is below max_cells_per_target / max_control_cells).
+    pca = expr.obsm["X_pca"]
+    tgt = expr.obs["target_gene"].to_numpy()
+    targeting = (expr.obs["perturbation_class"] == "targeting").to_numpy()
+    for name in ("TargetA", "TargetB"):
+        expected = compute_energy_distance(pca[tgt == name], pca[targeting & (tgt != name)])
+        assert tbl.loc[name, "energy_distance"] == pytest.approx(expected, rel=1e-6)
+    # Shifted TargetA is far from the other targeting cells and significant.
+    assert tbl.loc["TargetA", "energy_distance"] > 2 * tbl.loc["TargetB", "energy_distance"]
+    assert tbl.loc["TargetA", "pvalue"] < 0.01
+
+
+def test_other_control_worker_skips_target_when_too_few_controls_remain():
+    """A target whose own cells are almost the whole pool is skipped, not tested against itself."""
+    expr = _create_synthetic_anndata()
+    keep = np.r_[np.arange(0, 10), np.arange(100, 180), np.arange(180, 200)]  # 10 NTC, 80 A, 20 B
+    expr = expr[keep].copy()
+    cfg = Config()
+    cfg.distance.enabled = True
+    cfg.distance.min_cells = 30
+    cfg.distance.n_permutations = 50
+    results = compute_perturbation_distance(expr, cfg)
+    assert results.control_used == "other"
+    assert "TargetA" not in results.table["target_gene"].tolist()
+    reasons = dict(zip(results.skipped["target_gene"], results.skipped["reason"]))
+    assert "control cells" in reasons["TargetA"]

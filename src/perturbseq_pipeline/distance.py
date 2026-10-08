@@ -351,20 +351,36 @@ def distance_test_permutation(
 
 def _eval_target_dist_worker(
     task_payload: Tuple[
-        int, str, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], int, int, int, int, str, Optional[str]
+        int,
+        str,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        bool,
+        Optional[np.ndarray],
+        int,
+        int,
+        int,
+        int,
+        str,
+        Optional[str],
     ],
 ) -> Tuple[Optional[dict], Optional[dict]]:
     """Worker function executing DistanceTest for one perturbation target.
 
     Receives cleanly unpacked numeric arrays and scalar parameters without
-    referencing or deserializing full AnnData objects.
+    referencing or deserializing full AnnData objects. ``ctrl_indices`` are the
+    pre-sampled control cells; with ``exclude_self`` (the ``other`` control, i.e.
+    all targeting cells) the focal target's own cells are removed from them so a
+    perturbation is never compared against itself.
     """
     (
         i,
         target,
         pert_indices,
         embedding_arr,
-        Y_ctrl,
+        ctrl_indices,
+        exclude_self,
         strata,
         min_cells,
         max_cells_per_target,
@@ -376,6 +392,16 @@ def _eval_target_dist_worker(
     n_pert = int(pert_indices.size)
     if n_pert < min_cells:
         return None, {"target_gene": target, "n_cells": n_pert, "reason": f"fewer than {min_cells} cells ({n_pert})"}
+    if exclude_self:
+        ctrl_indices = ctrl_indices[~np.isin(ctrl_indices, pert_indices)]
+    n_ctrl = int(ctrl_indices.size)
+    if n_ctrl < min_cells:
+        return None, {
+            "target_gene": target,
+            "n_cells": n_pert,
+            "reason": f"fewer than {min_cells} control cells after excluding the target's own cells ({n_ctrl})",
+        }
+    Y_ctrl = embedding_arr[ctrl_indices]
     target_seed = derive_seed(random_seed, f"{i}_{target}")
     rng_target = np.random.default_rng(target_seed)
     pert_indices_sampled = _sample_cell_indices(pert_indices, max_cells_per_target, rng_target, strata=strata)
@@ -460,7 +486,9 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
     # Pre-sample control cells reproducibly
     rng_ctrl = np.random.default_rng(dcfg.random_seed)
     ctrl_indices_sampled = _sample_cell_indices(ctrl_indices_all, dcfg.max_control_cells, rng_ctrl, strata=strata)
-    Y_ctrl = embedding[ctrl_indices_sampled]
+    # The 'other' control is every targeting cell, so each target's own cells must be
+    # dropped from the control sample inside the worker (as perturbation.py does).
+    exclude_self = ctrl_choice == CONTROL_OTHER
     # Identify all targeting perturbations
     targeting_mask = klass == CLASS_TARGETING
     all_targets = sorted(set(targets_col[targeting_mask]))
@@ -494,7 +522,8 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
             target,
             targeting_indices_dict.get(target, np.empty(0, dtype=np.int64)),
             worker_embedding,
-            Y_ctrl,
+            ctrl_indices_sampled,
+            exclude_self,
             strata,
             dcfg.min_cells,
             dcfg.max_cells_per_target,
