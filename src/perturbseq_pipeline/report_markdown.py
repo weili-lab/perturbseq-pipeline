@@ -410,7 +410,7 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             + f"significant at FDR < {r.fdr_alpha}"
             + (f" and |log2fc| > {r.min_abs_log2fc:g}" if r.min_abs_log2fc > 0 else "")
             + ". The same calls made on the permuted data give the empirical FDR of the call set "
-            "(`perm_mean_pairs_fdr_pass` / `n_pairs_fdr_pass` = `empirical_fdr` below)"
+            "(`perm_mean_significant_pairs` / `n_significant_pairs` = `empirical_fdr` below)"
             + ". `log2fc` = lognorm coefficient / ln 2 (log2 ratio of geometric means of normalised counts + 1). "
             "Full matrices: `tables/regression_effect_matrix.csv`, `tables/regression_fdr.csv`; pairs: `tables/regression_de.csv`.",
             "",

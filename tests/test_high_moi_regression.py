@@ -185,6 +185,37 @@ def test_global_fdr_scope_controls_the_call_set():
     np.testing.assert_allclose(per_target.pval.to_numpy(), glob.pval.to_numpy())  # same p-values, other family
 
 
+def test_empirical_fdr_uses_the_reported_call_criteria():
+    """With an effect-size cut the permuted calls get the same cut as the reported calls."""
+    rng = np.random.default_rng(6)
+    T = _random_design(rng, n=800, k=20, moi=3.0)
+    Y = rng.normal(2.0, 0.5, size=(800, 40))
+    Y[T[:, 0] == 1, :8] -= 0.5
+    a = _membership_adata(T, Y, [f"T{j}" for j in range(20)])
+    plain = reg_mod.run_regression(a, _cfg(batch_key=None))
+    cut = reg_mod.run_regression(a, _cfg(batch_key=None, min_abs_log2fc=0.3))
+    np.testing.assert_allclose(plain.fdr.to_numpy(), cut.fdr.to_numpy())  # same inference, different call rule
+    assert cut.info["n_significant_pairs"] == int(((cut.fdr < 0.05) & (cut.log2fc.abs() > 0.3)).to_numpy().sum())
+    assert cut.info["n_significant_pairs"] >= 8 and cut.info["n_significant_pairs"] <= plain.info["n_significant_pairs"]
+    # null calls under the cut are a subset of the null calls without it
+    assert cut.info["perm_mean_significant_pairs"] <= plain.info["perm_mean_significant_pairs"]
+    huge = reg_mod.run_regression(a, _cfg(batch_key=None, min_abs_log2fc=10.0))
+    assert huge.info["n_significant_pairs"] == 0 and huge.info["perm_mean_significant_pairs"] == 0
+    assert np.isnan(huge.info["empirical_fdr"])
+
+
+def test_modules_never_fall_back_to_pseudobulk():
+    from perturbseq_pipeline import modules as modules_mod
+
+    rng = np.random.default_rng(7)
+    T = _random_design(rng, n=200, k=6)
+    a = _membership_adata(T, rng.normal(1.0, 0.3, size=(200, 12)), [f"T{j}" for j in range(6)])
+    cfg = _cfg()
+    cfg.modules.effect_source = "regression"
+    with pytest.raises(ValueError, match="no regression result"):
+        modules_mod.compute_modules(a, cfg, regression=None)
+
+
 def test_min_cells_reports_only_supported_targets_but_keeps_them_in_the_design():
     rng = np.random.default_rng(4)
     T = _random_design(rng, n=300, k=5)
@@ -252,3 +283,20 @@ def test_regression_end_to_end_moi4_with_modules_from_regression(tmp_path):
     assert status["regression"] == "completed" and status["modules"] == "completed"
     report = (Path(cfg.run.outdir) / "report.md").read_text()
     assert "Membership regression (high-MOI)" in report
+
+
+def test_modules_skipped_when_regression_has_no_result(tmp_path):
+    from perturbseq_pipeline.cli import run_pipeline
+
+    data = make_dataset(tmp_path / "synthetic", n_lanes=2, n_cells=300, moi=4)
+    cfg = _base_cfg(data, tmp_path / "run", assignment_mode="high_moi", high_moi={"min_umi": 5})
+    cfg.regression.enabled = True
+    cfg.regression.min_cells = 100_000  # no target qualifies -> the stage is skipped
+    cfg.modules.effect_source = "regression"
+    cfg.validate()
+    result = run_pipeline(cfg)
+    status = result.module_status.set_index("module")
+    assert status.loc["regression", "status"] == "skipped"
+    assert status.loc["modules", "status"] == "skipped" and "regression" in status.loc["modules", "note"]
+    tables = Path(cfg.run.outdir) / "tables"
+    assert not (tables / "effect_matrix.csv").exists() and not (tables / "regression_summary.csv").exists()

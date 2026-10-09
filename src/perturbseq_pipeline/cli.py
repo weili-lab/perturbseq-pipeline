@@ -776,7 +776,13 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
     # Stage 7: modules/programs
     # =====================================================================
     modules_result = None
-    if cfg.modules.enabled:
+    if cfg.modules.enabled and cfg.modules.effect_source == "regression" and regression is None:
+        # Never substitute pseudobulk effects for the configured regression effects.
+        reason = "modules.effect_source is 'regression' but the regression stage produced no result"
+        logger.warning("Modules/programs skipped: %s", reason)
+        warnings.append(f"Modules: skipped — {reason} (see the regression stage status).")
+        status.mark("modules", STATUS_SKIPPED, reason)
+    elif cfg.modules.enabled:
         status.start("modules")
         logger.info("=== Stage 7/14: co-functional modules & gene programs ===")
         modules_result = modules_mod.compute_modules(expr, cfg, regression=regression)

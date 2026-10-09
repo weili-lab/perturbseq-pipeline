@@ -267,36 +267,48 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
         n_perm,
         f" within {batch_used}" if batch_used else "",
     )
-    # --- designs: observed + permutations -------------------------------------------
+    # --- designs: observed + permutations, one at a time --------------------------------
+    # Each design owns a dense (targets x targets) Cholesky factor, so only one is alive at any time; the gene
+    # chunks are re-read per design. Peak memory: one factor + the stored null (4 bytes x targets x genes x perms).
     rng = np.random.default_rng(cfg.run.seed)
-    designs = [_Design(M, n_guides, fixed, alpha, n_report)]
-    for _ in range(n_perm):
-        perm = _within_group_permutation(groups, rng)
-        designs.append(_Design(M[perm], None if n_guides is None else n_guides[perm], fixed, alpha, n_report))
     coef_all = np.empty((n_report, G), dtype=np.float64)
     t_all = np.empty((n_report, G), dtype=np.float64)
     null = np.empty((n_report, n_perm * G), dtype=np.float32)
+    # permuted |log2fc|, only needed when the calls also have an effect-size cut
+    null_lfc = np.empty((n_report, n_perm * G), dtype=np.float32) if rcfg.min_abs_log2fc > 0 else None
     chunk = cfg.scaling.effect_gene_chunk
-    for start in range(0, G, chunk):
-        stop = min(start + chunk, G)
-        Y = layer[:, gene_pos[start:stop]]
-        Y = (
-            sparse.csr_matrix(Y, dtype=np.float64)[fit_idx]
-            if sparse.issparse(Y)
-            else sparse.csr_matrix(np.asarray(Y, dtype=np.float64)[fit_idx])
+    residual_df = 1
+    for d in range(n_perm + 1):
+        if d == 0:
+            design = _Design(M, n_guides, fixed, alpha, n_report)
+            residual_df = max(n - design.p, 1)
+        else:
+            perm = _within_group_permutation(groups, rng)
+            design = _Design(M[perm], None if n_guides is None else n_guides[perm], fixed, alpha, n_report)
+        for start in range(0, G, chunk):
+            stop = min(start + chunk, G)
+            Y = layer[:, gene_pos[start:stop]]
+            Y = (
+                sparse.csr_matrix(Y, dtype=np.float64)[fit_idx]
+                if sparse.issparse(Y)
+                else sparse.csr_matrix(np.asarray(Y, dtype=np.float64)[fit_idx])
+            )
+            yty = np.asarray(Y.multiply(Y).sum(axis=0)).ravel()
+            coef, t = _fit_chunk(design, Y, yty, alpha, n, n_report)
+            if d == 0:
+                coef_all[:, start:stop] = coef
+                t_all[:, start:stop] = t
+            else:
+                cols = slice((d - 1) * G + start, (d - 1) * G + stop)
+                null[:, cols] = np.abs(t)
+                if null_lfc is not None:
+                    null_lfc[:, cols] = np.abs(coef) / _LN2
+            del Y
+        del design
+        gc.collect()
+        logger.info(
+            "regression: %s design complete (%d genes)", "observed" if d == 0 else f"permutation {d}/{n_perm}", G
         )
-        yty = np.asarray(Y.multiply(Y).sum(axis=0)).ravel()
-        coef, t = _fit_chunk(designs[0], Y, yty, alpha, n, n_report)
-        coef_all[:, start:stop] = coef
-        t_all[:, start:stop] = t
-        for d, design in enumerate(designs[1:]):
-            _, t0 = _fit_chunk(design, Y, yty, alpha, n, n_report)
-            null[:, d * G + start : d * G + stop] = np.abs(t0)
-        del Y
-        logger.info("regression: genes %d-%d / %d complete", start + 1, stop, G)
-    residual_df = max(n - designs[0].p, 1)
-    del designs
-    gc.collect()
     # --- p-values: t test deflated by the per-target permutation null (genomic control), BH within target ---
     # A pooled empirical p-value cannot go below 1 / (1 + n_perm * G), which caps the BH q of a lone hit at
     # ~1 / n_perm; so the permutations calibrate the t statistic instead of replacing its distribution, and
@@ -306,12 +318,16 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
     scale = np.sqrt(lam)[:, None]
     pval = 2.0 * _tdist.sf(np.abs(t_all) / scale, residual_df)
     fdr = _bh(pval, rcfg.fdr_scope)
+    # the permuted calls use the same criteria as the reported calls (FDR and, if set, |log2fc|)
     n_sig_null = np.zeros(n_perm, dtype=np.int64)
     for d in range(n_perm):
-        p0 = 2.0 * _tdist.sf(null[:, d * G : (d + 1) * G].astype(np.float64) / scale, residual_df)
-        n_sig_null[d] = int((_bh(p0, rcfg.fdr_scope) < rcfg.fdr_alpha).sum())
-    del null
-    n_sig_obs = int((fdr < rcfg.fdr_alpha).sum())
+        cols = slice(d * G, (d + 1) * G)
+        p0 = 2.0 * _tdist.sf(null[:, cols].astype(np.float64) / scale, residual_df)
+        call0 = _bh(p0, rcfg.fdr_scope) < rcfg.fdr_alpha
+        if null_lfc is not None:
+            call0 &= null_lfc[:, cols] > rcfg.min_abs_log2fc
+        n_sig_null[d] = int(call0.sum())
+    del null, null_lfc
     perm_mean_sig = float(n_sig_null.mean())
     log2fc = coef_all / _LN2
     lfc = pd.DataFrame(log2fc, index=targets, columns=genes)
@@ -372,9 +388,8 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
         "n_targets_with_de": int((sig.sum(axis=1) > 0).sum()),
         "gc_lambda_median": float(np.median(lam)),
         "gc_lambda_max": float(lam.max()),
-        "n_pairs_fdr_pass": n_sig_obs,
-        "perm_mean_pairs_fdr_pass": perm_mean_sig,
-        "empirical_fdr": (perm_mean_sig / n_sig_obs) if n_sig_obs else float("nan"),
+        "perm_mean_significant_pairs": perm_mean_sig,
+        "empirical_fdr": (perm_mean_sig / int(sig.sum())) if sig.any() else float("nan"),
     }
     design_tbl = pd.DataFrame([(k, v) for k, v in info.items()], columns=["metric", "value"])
     design_tbl["value"] = design_tbl["value"].astype(str)

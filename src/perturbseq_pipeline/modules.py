@@ -832,11 +832,11 @@ def compute_modules(expr: ad.AnnData, cfg: Config, regression=None) -> Optional[
     """
     mcfg = cfg.modules
     use_regression = mcfg.effect_source == "regression"
-    source_note = ""
     if use_regression and regression is None:
-        logger.warning("modules: effect_source is 'regression' but no regression result exists — using pseudobulk")
-        use_regression = False
-        source_note = "effect_source 'regression' requested but the regression produced no result; pseudobulk used. "
+        raise ValueError(
+            "modules.effect_source is 'regression' but no regression result was given; "
+            "the caller must skip the stage rather than fall back to pseudobulk effects"
+        )
     targets = select_perturbations(expr, cfg)
     if use_regression:
         targets = [t for t in targets if t in regression.log2fc.index]
@@ -974,7 +974,7 @@ def compute_modules(expr: ad.AnnData, cfg: Config, regression=None) -> Optional[
             "DE = regression permutation FDR; genes = the regression's gene set."
         )
     else:
-        note = source_note + (
+        note = (
             "STANDARD mode: original dense selected-gene implementation."
             if not large_mode
             else (
