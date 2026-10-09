@@ -188,7 +188,8 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "non-targeting guide is also tested as a negative-control pseudo-target (`NTC:<guide>`), giving the empirical "
             "false-positive rate below. Per-cell PS and lochNESS scores are computed for every (cell, carried target) pair "
             "(`obsm['ps_score_membership']`, `obsm['lochness_membership']`); `obs['ps_score']` / `obs['lochness_self']` hold each "
-            "cell's score for its primary (highest-UMI) target. The knockdown filter still uses the primary target. "
+            "cell's score for its primary (highest-UMI) target; the knockdown filter evaluates every (cell, carried target) pair "
+            "(`obsm['kd_status_membership']`) and keeps the primary target's status in `obs`. "
             f"The full membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
             "",
             T("high_moi_calling"),

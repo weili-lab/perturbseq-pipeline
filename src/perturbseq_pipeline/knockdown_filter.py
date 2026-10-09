@@ -262,15 +262,18 @@ def compute_knockdown_mask(expr: ad.AnnData, cfg: Config) -> Tuple[ad.AnnData, p
     Returns the AnnData (same cells, nothing removed) and a table with one row
     per (target, context).
     """
+    from .high_moi import membership_index
+
     kcfg = cfg.knockdown_filter
     obs = expr.obs
     targets = obs[OBS_TARGET].astype(str).to_numpy()
     klass = obs[OBS_CLASS].astype(str).to_numpy()
-    if cfg.guides.assignment_mode == "high_moi":
-        logger.warning(
-            "knockdown_filter: high-MOI mode evaluates each cell under its PRIMARY target only "
-            "(per-(cell, target) knockdown status is not implemented yet)."
-        )
+    # High-MOI membership: every (cell, carried target) pair is evaluated. The per-target machinery below runs
+    # unchanged on the target's member cells; its per-cell scratch arrays are harvested into sparse per-(cell, target)
+    # matrices and reset before the next target, and obs keeps each cell's values for its PRIMARY target.
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        logger.info("knockdown_filter: high-MOI membership — evaluating every (cell, carried target) pair")
     contexts = _contexts(expr, cfg)
     context_values = sorted(set(contexts))
     count_model = kcfg.method == "count_model"
@@ -283,8 +286,17 @@ def compute_knockdown_mask(expr: ad.AnnData, cfg: Config) -> Tuple[ad.AnnData, p
     status = np.full(expr.n_obs, STATUS_UNTOUCHED, dtype=object)
     status[ntc] = STATUS_CONTROL
     ratio = np.full(expr.n_obs, np.nan)
-    all_targets = sorted(set(targets[targeting]))
+    all_targets = list(membership.targets) if membership is not None else sorted(set(targets[targeting]))
     measured = [g for g in all_targets if g in expr.var_names]
+    # membership-mode outputs
+    primary_status = status.copy()
+    primary_ratio = ratio.copy()
+    primary_escaper = np.full(expr.n_obs, np.nan)
+    status_codes = {label: code for code, label in enumerate(ALL_STATUSES, start=1)}
+    mem_rows: List[np.ndarray] = []
+    mem_cols: List[np.ndarray] = []
+    mem_ratio: List[np.ndarray] = []
+    mem_status: List[np.ndarray] = []
     columns = _linear_target_columns(expr, measured) if measured else None
     col_of = {g: j for j, g in enumerate(measured)}
     if count_model:
@@ -310,8 +322,8 @@ def compute_knockdown_mask(expr: ad.AnnData, cfg: Config) -> Tuple[ad.AnnData, p
         model_phi = np.full(expr.n_obs, np.nan)
         escaper_prob = np.full(expr.n_obs, np.nan)
     rows: List[Dict[str, object]] = []
-    for gene in all_targets:
-        gene_cells = targeting & (targets == gene)
+    for gene_number, gene in enumerate(all_targets):
+        gene_cells = membership.mask(gene) if membership is not None else targeting & (targets == gene)
         x = None
         if gene in col_of:
             x = columns[:, col_of[gene]].toarray().ravel()
@@ -389,13 +401,48 @@ def compute_knockdown_mask(expr: ad.AnnData, cfg: Config) -> Tuple[ad.AnnData, p
             _decide_pooled(gene_rows, status, kcfg, group_test, mark)
         else:
             _decide_per_context(gene_rows, status, kcfg, group_test, mark)
+        if membership is not None:
+            # finalise this target's rows now, harvest its member cells, then reset the scratch arrays
+            for row in gene_rows:
+                cells = row.pop("_cells")
+                if row["group_status"] in (STATUS_NOT_MEASURED, STATUS_LOW_EXPRESSION, STATUS_NON_TESTABLE):
+                    status[cells] = row["group_status"]
+                row["n_kept"] = int(np.isin(status[cells], KEEP_STATUSES).sum())
+                row["n_escaper"] = int((status[cells] == STATUS_ESCAPER).sum())
+            idx = np.flatnonzero(gene_cells)
+            mem_rows.append(idx.astype(np.int64))
+            mem_cols.append(np.full(idx.size, gene_number, dtype=np.int64))
+            mem_ratio.append(ratio[idx].astype(np.float32))
+            mem_status.append(np.array([status_codes.get(v, 0) for v in status[idx]], dtype=np.int8))
+            prim = idx[targets[idx] == gene]
+            primary_status[prim] = status[prim]
+            primary_ratio[prim] = ratio[prim]
+            if count_model:
+                primary_escaper[prim] = escaper_prob[prim]
+                model_mean[idx] = np.nan
+                model_phi[idx] = np.nan
+                escaper_prob[idx] = np.nan
+            status[idx] = STATUS_UNTOUCHED
+            ratio[idx] = np.nan
         rows.extend(gene_rows)
     for row in rows:
+        if "_cells" not in row:
+            continue  # membership mode: already finalised per target
         cells = row.pop("_cells")
         if row["group_status"] in (STATUS_NOT_MEASURED, STATUS_LOW_EXPRESSION, STATUS_NON_TESTABLE):
             status[cells] = row["group_status"]
         row["n_kept"] = int(np.isin(status[cells], KEEP_STATUSES).sum())
         row["n_escaper"] = int((status[cells] == STATUS_ESCAPER).sum())
+    if membership is not None:
+        status, ratio, escaper_prob = primary_status, primary_ratio, primary_escaper
+        if mem_rows:
+            r = np.concatenate(mem_rows)
+            c = np.concatenate(mem_cols)
+            shape = (expr.n_obs, len(all_targets))
+            expr.obsm["kd_ratio_membership"] = sparse.csr_matrix((np.concatenate(mem_ratio), (r, c)), shape=shape, dtype=np.float32)
+            expr.obsm["kd_status_membership"] = sparse.csr_matrix((np.concatenate(mem_status), (r, c)), shape=shape, dtype=np.int8)
+            expr.uns["kd_membership_targets"] = list(all_targets)
+            expr.uns["kd_status_codes"] = {str(k): int(v) for k, v in status_codes.items()}
     expr.obs[OBS_KD_RATIO] = ratio
     expr.obs[OBS_KD_STATUS] = pd.Categorical(status, categories=list(ALL_STATUSES))
     expr.obs[OBS_KD_KEEP] = np.isin(status, KEEP_STATUSES)

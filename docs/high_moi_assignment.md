@@ -100,9 +100,14 @@ value per cell: the score for the cell's primary (highest-UMI) target. The
 PS_python LDA/UMAP embedding is not computed in this mode (it needs one label
 per cell).
 
-**Primary-label stage:** the knockdown filter still evaluates each cell under
-its primary target (it logs a warning); `tables/guide_assignment.csv` keeps both
-`testable` (primary-label rule) and `testable_membership`.
+**Knockdown filter on membership.** Each target's member cells go through the
+unchanged per-(target, context) machinery; the per-cell results are stored for
+every (cell, carried target) pair in `obsm['kd_ratio_membership']` and
+`obsm['kd_status_membership']` (status codes in `uns['kd_status_codes']`,
+columns in `uns['kd_membership_targets']`), and `obs['kd_status']` /
+`kd_ratio` / `kd_keep` keep the primary target's values.
+`tables/guide_assignment.csv` keeps both `testable` (primary-label rule) and
+`testable_membership`.
 
 Caveats: with ~9 co-carried guides per cell a strong perturbation leaks into
 the `other` control of the targets it co-occurs with (diluted roughly by

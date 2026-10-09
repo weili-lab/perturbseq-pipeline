@@ -559,9 +559,9 @@ def _check_guide_qc_high_moi(expr: ad.AnnData, cfg: Config) -> List[str]:
         "the membership matrix (perturbed = cells carrying the target; 'other' = targeting cells not carrying it; "
         "non-targeting guides are tested as negative-control pseudo-targets). Per-cell PS and lochNESS scores are computed "
         "for every (cell, carried target) pair (obsm['ps_score_membership'], obsm['lochness_membership']); obs['ps_score'] "
-        "and obs['lochness_self'] hold each cell's score for its PRIMARY (highest-UMI) target. The knockdown filter still "
-        f"evaluates each cell under its primary target. Membership: obsm['{hcfg.membership_obsm_key}'], targets in "
-        "uns['membership_targets']."
+        "and obs['lochness_self'] hold each cell's score for its PRIMARY (highest-UMI) target; the knockdown filter likewise "
+        "evaluates every (cell, carried target) pair (obsm['kd_status_membership']) and keeps the primary target's status in "
+        f"obs. Membership: obsm['{hcfg.membership_obsm_key}'], targets in uns['membership_targets']."
     )
     return warnings
 

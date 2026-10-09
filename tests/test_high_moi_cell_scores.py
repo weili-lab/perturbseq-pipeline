@@ -120,4 +120,33 @@ def test_high_moi_cell_scores_end_to_end(tmp_path):
     ps = pd.read_csv(outdir / "tables" / "ps_score.csv")
     assert len(ps) >= 3 and (ps["n_perturbed_cells"] > 150).all()
     report = (outdir / "report.md").read_text()
-    assert "ps_score_membership" in report and "knockdown filter still uses the primary target" in report
+    assert "ps_score_membership" in report and "kd_status_membership" in report
+
+
+def test_knockdown_filter_matches_single_guide_on_one_target_cells(paired_objects):
+    from perturbseq_pipeline import knockdown_filter as kd_mod
+
+    sg, hm, cfg_sg, cfg_hm = paired_objects
+    for c in (cfg_sg, cfg_hm):
+        c.knockdown_filter.enabled = True
+        c.knockdown_filter.min_cells = 5
+        c.knockdown_filter.min_control_cells = 5
+    a, ta = kd_mod.compute_knockdown_mask(sg.copy(), cfg_sg)
+    b, tb = kd_mod.compute_knockdown_mask(hm.copy(), cfg_hm)
+    keys = ["target_gene", "context"]
+    cols = ["n_cells", "n_control", "control_mean", "mean_ratio", "n_kept", "n_escaper"]
+    pd.testing.assert_frame_equal(
+        ta.set_index(keys).sort_index()[cols].astype(float), tb.set_index(keys).sort_index()[cols].astype(float), check_exact=False, rtol=1e-6
+    )
+    assert (ta.set_index(keys).sort_index()["group_status"] == tb.set_index(keys).sort_index()["group_status"]).all()
+    assert (a.obs["kd_status"].astype(str).to_numpy() == b.obs["kd_status"].astype(str).to_numpy()).all()
+    np.testing.assert_allclose(a.obs["kd_ratio"].to_numpy(), b.obs["kd_ratio"].to_numpy(), rtol=1e-6, equal_nan=True)
+    assert "kd_status_membership" in b.obsm and "kd_ratio_membership" in b.obsm and "kd_status_membership" not in a.obsm
+    S = b.obsm["kd_status_membership"].tocsr()
+    codes = b.uns["kd_status_codes"]
+    # on one-target cells the membership matrix has one entry per targeting cell, equal to the obs status
+    targeting = (b.obs[OBS_CLASS].astype(str) == CLASS_TARGETING).to_numpy()
+    assert (np.diff(S.indptr)[targeting] == 1).all()
+    inv = {v: k for k, v in codes.items()}
+    i = int(np.flatnonzero(targeting)[0])
+    assert inv[int(S[i].data[0])] == str(b.obs["kd_status"].iloc[i])
