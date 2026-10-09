@@ -160,6 +160,10 @@ class PSResults:
     own_score: Optional[np.ndarray] = None
     #: Direct own-target quadrant vector.
     own_quadrant: Optional[np.ndarray] = None
+    #: High-MOI mode: sparse cells x targets PS for member cells (``obsm['ps_score_membership']``).
+    membership_scores: Optional[sparse.csr_matrix] = None
+    membership_targets: List[str] = field(default_factory=list)
+    membership_aware: bool = False
 
     @property
     def targets(self) -> List[str]:
@@ -556,8 +560,14 @@ def _compute_ps_scores_large(expr: ad.AnnData, cfg: Config) -> PSResults:
     """Scalable target-wise PS execution."""
     from pertps import PerturbAnalyzer
 
+    from .high_moi import membership_index
+
     pcfg = cfg.ps_score
-    logger.info("PS execution mode: LARGE-DATASET (target-wise PerturbAnalyzer objects)")
+    membership = membership_index(expr, cfg)
+    logger.info(
+        "PS execution mode: LARGE-DATASET (target-wise PerturbAnalyzer objects)%s",
+        " on high-MOI membership (perturbed = cells carrying the target)" if membership is not None else "",
+    )
     klass = expr.obs[OBS_CLASS].astype(str).to_numpy()
     targets_col = expr.obs[OBS_TARGET].astype(str).to_numpy()
     targeting_indices = np.flatnonzero(klass == CLASS_TARGETING).astype(np.int64, copy=False)
@@ -570,18 +580,32 @@ def _compute_ps_scores_large(expr: ad.AnnData, cfg: Config) -> PSResults:
             "perturbation scores were skipped."
         )
         logger.warning(msg)
-        return PSResults(summary=pd.DataFrame(), note=msg, ps_threshold=pcfg.ps_threshold, large_mode=True)
+        return PSResults(
+            summary=pd.DataFrame(),
+            note=msg,
+            ps_threshold=pcfg.ps_threshold,
+            large_mode=True,
+            membership_aware=membership is not None,
+        )
     rng = np.random.default_rng(cfg.run.seed)
     sampled_ctrl = _sample_indices(ntc_indices, LARGE_PS_MAX_CONTROLS, rng)
     logger.info("Large PS mode: using %d/%d NTC cells per target", sampled_ctrl.size, ntc_indices.size)
     # Build target -> integer cell indices once.
-    target_frame = pd.DataFrame({"target": (targets_col[targeting_indices]), "cell_index": (targeting_indices)})
-    target_indices = {
-        target: group["cell_index"].to_numpy(dtype=np.int64, copy=True)
-        for target, group in target_frame.groupby("target", observed=True, sort=False)
-    }
-    del target_frame
+    if membership is not None:
+        target_indices = {target: membership.indices(target) for target in membership.targets}
+    else:
+        target_frame = pd.DataFrame({"target": (targets_col[targeting_indices]), "cell_index": (targeting_indices)})
+        target_indices = {
+            target: group["cell_index"].to_numpy(dtype=np.int64, copy=True)
+            for target, group in target_frame.groupby("target", observed=True, sort=False)
+        }
+        del target_frame
     gc.collect()
+    # Membership mode: every (cell, carried target) score goes into a sparse matrix; obs keeps the primary target's.
+    mem_rows: List[np.ndarray] = []
+    mem_cols: List[np.ndarray] = []
+    mem_vals: List[np.ndarray] = []
+    mem_targets: List[str] = []
     counts = {target: len(indices) for target, indices in target_indices.items()}
     candidates = sorted([target for target, n in counts.items() if n >= pcfg.min_cells_per_target])
     measured_index = {gene: idx for idx, gene in enumerate(expr.var_names)}
@@ -658,9 +682,20 @@ def _compute_ps_scores_large(expr: ad.AnnData, cfg: Config) -> PSResults:
         quadrants[gene] = target_quadrant
         target_positions = expr.obs_names.get_indexer(target_series.index)
         valid_pos = target_positions >= 0
-        own_score[target_positions[valid_pos]] = target_series.to_numpy(dtype=np.float32)[valid_pos]
+        pos = target_positions[valid_pos]
+        values = target_series.to_numpy(dtype=np.float32)[valid_pos]
         quadrant_aligned = target_quadrant.reindex(target_series.index).fillna("not applicable").astype(str).to_numpy()
-        own_quadrant[target_positions[valid_pos]] = quadrant_aligned[valid_pos]
+        if membership is not None:
+            mem_rows.append(pos.astype(np.int64))
+            mem_cols.append(np.full(pos.size, len(mem_targets), dtype=np.int64))
+            mem_vals.append(values)
+            mem_targets.append(gene)
+            is_primary = targets_col[pos] == gene
+            own_score[pos[is_primary]] = values[is_primary]
+            own_quadrant[pos[is_primary]] = quadrant_aligned[valid_pos][is_primary]
+        else:
+            own_score[pos] = values
+            own_quadrant[pos] = quadrant_aligned[valid_pos]
         del analyzer
         del work
         del series
@@ -678,8 +713,16 @@ def _compute_ps_scores_large(expr: ad.AnnData, cfg: Config) -> PSResults:
             large_mode=True,
             own_score=own_score,
             own_quadrant=own_quadrant,
+            membership_aware=membership is not None,
         )
     summary = pd.DataFrame(rows).sort_values("pct_successful_kd", ascending=False).reset_index(drop=True)
+    membership_scores = None
+    if membership is not None and mem_targets:
+        membership_scores = sparse.csr_matrix(
+            (np.concatenate(mem_vals), (np.concatenate(mem_rows), np.concatenate(mem_cols))),
+            shape=(expr.n_obs, len(mem_targets)),
+            dtype=np.float32,
+        )
     # Full PS_python LDA is intentionally not attempted over millions of cells.
     lda_umap = None
     lda_label = None
@@ -713,7 +756,18 @@ def _compute_ps_scores_large(expr: ad.AnnData, cfg: Config) -> PSResults:
         large_mode=True,
         own_score=own_score,
         own_quadrant=own_quadrant,
-        note=(f"Large-dataset PS mode used up to {LARGE_PS_MAX_CONTROLS:,} NTC controls per target."),
+        membership_scores=membership_scores,
+        membership_targets=mem_targets,
+        membership_aware=membership is not None,
+        note=(
+            f"Large-dataset PS mode used up to {LARGE_PS_MAX_CONTROLS:,} NTC controls per target."
+            + (
+                " High-MOI membership: perturbed = cells carrying the target; obs['ps_score'] is the primary target's "
+                "score, obsm['ps_score_membership'] every (cell, carried target) score."
+                if membership is not None
+                else ""
+            )
+        ),
     )
 
 
@@ -805,11 +859,21 @@ def compute_ps_scores(expr: ad.AnnData, cfg: Config) -> Optional[PSResults]:
             raise PertpsUnavailable(msg)
         logger.warning("%s — skipping perturbation-score stage.", msg)
         return PSResults(summary=pd.DataFrame(), note=msg)
+    from .high_moi import membership_index
+
     logger.info("Using pertps %s for per-cell perturbation scores", _pertps_version())
-    klass = expr.obs[OBS_CLASS].astype(str)
-    target_counts = expr.obs.loc[klass == CLASS_TARGETING, OBS_TARGET].astype(str).value_counts()
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        target_counts = membership.counts
+    else:
+        klass = expr.obs[OBS_CLASS].astype(str)
+        target_counts = expr.obs.loc[klass == CLASS_TARGETING, OBS_TARGET].astype(str).value_counts()
     n_testable_targets = int((target_counts >= pcfg.min_cells_per_target).sum())
     large_mode = cfg.use_large_mode(expr.n_obs, n_perturbations=n_testable_targets)
+    if membership is not None and not large_mode:
+        # pertps takes one label per cell; the target-wise path is the only one that fits multi-target cells
+        logger.info("High-MOI membership: using the target-wise PS path (PS_python LDA/UMAP is not computed)")
+        large_mode = True
     decision = resolve_stage_backend("ps_score", cfg, n_cells=expr.n_obs)
     if cfg.compute.log_backend_decisions:
         log_compute_decision(decision)
@@ -839,6 +903,9 @@ def attach_scores(expr: ad.AnnData, results: Optional[PSResults]) -> ad.AnnData:
     """
     if results is None:
         return expr
+    if results.membership_scores is not None:
+        expr.obsm["ps_score_membership"] = results.membership_scores
+        expr.uns["ps_score_membership_targets"] = list(results.membership_targets)
     # Large mode
     if results.large_mode:
         if results.own_score is not None:

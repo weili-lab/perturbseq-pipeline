@@ -88,10 +88,21 @@ holds the tests and `tables/enrichment_pseudo_summary.csv` the empirical
 false-positive rate next to the real targets' hit rate. Perturbation strength
 has no pseudo-targets (an NTC guide has no own gene to test).
 
-**Primary-label stages** (per-cell PS scores, lochNESS, the knockdown filter)
-still evaluate each cell under its primary (highest-UMI) target; the report
-warnings say so. `tables/guide_assignment.csv` therefore keeps both
-`testable` (primary-label rule, what those stages use) and `testable_membership`.
+**Per-cell scores on membership.** PS scores (target-wise PS_python runs,
+perturbed = cells carrying the target, reference = NTC-only cells) and lochNESS
+(indicator = cells carrying the target, overall fraction = members / cells,
+computed for chunks of targets with one sparse product each) are computed for
+every (cell, carried target) pair and stored sparsely in
+`obsm['ps_score_membership']` / `obsm['lochness_membership']` (column names in
+`uns['ps_score_membership_targets']` / `uns['lochness_membership_targets']`).
+`obs['ps_score']`, `obs['ps_quadrant']` and `obs['lochness_self']` keep one
+value per cell: the score for the cell's primary (highest-UMI) target. The
+PS_python LDA/UMAP embedding is not computed in this mode (it needs one label
+per cell).
+
+**Primary-label stage:** the knockdown filter still evaluates each cell under
+its primary target (it logs a warning); `tables/guide_assignment.csv` keeps both
+`testable` (primary-label rule) and `testable_membership`.
 
 Caveats: with ~9 co-carried guides per cell a strong perturbation leaks into
 the `other` control of the targets it co-occurs with (diluted roughly by

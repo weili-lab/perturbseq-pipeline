@@ -114,6 +114,10 @@ class LochnessResults:
     note: str = ""
     #: True when only ``lochness_self`` was materialised.
     self_only: bool = False
+    #: High-MOI mode: sparse cells x targets scores for member cells (``obsm['lochness_membership']``).
+    membership_scores: Optional[sparse.csr_matrix] = None
+    membership_targets: List[str] = field(default_factory=list)
+    membership_aware: bool = False
 
     @property
     def targets(self) -> List[str]:
@@ -394,13 +398,19 @@ def compute_lochness(expr: ad.AnnData, cfg: Config) -> Optional[LochnessResults]
         raise ValueError(
             f"lochness.genotype_key={key!r} is not an obs column (available: {sorted(expr.obs.columns)[:20]})"
         )
+    from .high_moi import membership_index
+
     labels = expr.obs[key].astype(str).to_numpy()
     klass = (
         expr.obs[OBS_CLASS].astype(str).to_numpy()
         if OBS_CLASS in expr.obs.columns
         else np.full(expr.n_obs, CLASS_TARGETING, dtype=object)
     )
-    target_counts = pd.Series(labels[klass == CLASS_TARGETING]).value_counts()
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        target_counts = membership.counts
+    else:
+        target_counts = pd.Series(labels[klass == CLASS_TARGETING]).value_counts()
     eligible_targets = target_counts[target_counts >= lcfg.min_cells_per_target]
     n_targets = len(eligible_targets)
     large_mode = cfg.use_large_mode(expr.n_obs, n_perturbations=n_targets)
@@ -415,6 +425,8 @@ def compute_lochness(expr: ad.AnnData, cfg: Config) -> Optional[LochnessResults]
     adj, neighbor_counts = _adjacency(graph)
     k_actual = float(np.nanmedian(neighbor_counts))
     logger.info("Neighbour graph: median %d neighbours per cell", int(k_actual))
+    if membership is not None:
+        return _compute_lochness_membership(expr, cfg, membership, adj, neighbor_counts, k_actual, large_mode, labels, klass)
     # ======================================================================
     # LARGE DATASET PATH
     # ======================================================================
@@ -520,6 +532,133 @@ def compute_lochness(expr: ad.AnnData, cfg: Config) -> Optional[LochnessResults]
     )
 
 
+# High-MOI membership implementation
+
+
+def _compute_lochness_membership(
+    expr: ad.AnnData,
+    cfg: Config,
+    membership,
+    adj: sparse.csr_matrix,
+    neighbor_counts: np.ndarray,
+    k_actual: float,
+    large_mode: bool,
+    labels: np.ndarray,
+    klass: np.ndarray,
+) -> LochnessResults:
+    """lochNESS on the membership matrix: indicator(t) = cells carrying t, overall fraction = members / cells.
+
+    Scores are computed for chunks of targets at once (``adj @ membership[:, chunk]``),
+    so the cost is one sparse product per chunk in both execution modes. Every
+    member cell keeps its score for every target it carries (sparse
+    ``membership_scores``); ``self_score`` holds each cell's score for its
+    PRIMARY target so ``obs['lochness_self']`` keeps one value per cell. The
+    full per-target vectors are kept only in STANDARD mode (report figures).
+    """
+    lcfg = cfg.lochness
+    n = expr.n_obs
+    counts = membership.counts
+    candidates = sorted(counts[counts >= lcfg.min_cells_per_target].index)
+    skipped = pd.DataFrame(
+        [
+            {"target_gene": t, "n_cells": int(c), "reason": f"fewer than {lcfg.min_cells_per_target} cells"}
+            for t, c in counts.items()
+            if c < lcfg.min_cells_per_target
+        ]
+    )
+    if not candidates:
+        return LochnessResults(
+            summary=pd.DataFrame(),
+            skipped=skipped,
+            note="No target had enough cells for a lochNESS score.",
+            n_neighbors=int(k_actual),
+            membership_aware=True,
+        )
+    logger.info(
+        "lochNESS membership mode (%s): %d targets, chunks of %d",
+        "LARGE, self + member scores only" if large_mode else "STANDARD, full vectors kept",
+        len(candidates),
+        lcfg.target_chunk_size,
+    )
+    M = sparse.csr_matrix(membership.indicator(candidates).T, dtype=np.float32)  # cells x targets
+    adj32 = sparse.csr_matrix(adj, dtype=np.float32)
+    inv_neighbors = (1.0 / np.maximum(neighbor_counts, 1)).astype(np.float32)
+    clusters = expr.obs[CLUSTER_KEY].astype(str).to_numpy() if CLUSTER_KEY in expr.obs.columns else None
+    rng = np.random.default_rng(cfg.run.seed)
+    rows_i: List[np.ndarray] = []
+    cols_i: List[np.ndarray] = []
+    vals: List[np.ndarray] = []
+    self_score = np.full(n, np.nan, dtype=np.float32)
+    scores: Dict[str, np.ndarray] = {}
+    summary_rows: List[dict] = []
+    by_cluster_dict: Dict[str, Dict[str, float]] = {}
+    chunk = max(int(lcfg.target_chunk_size), 1)
+    for start in range(0, len(candidates), chunk):
+        genes = candidates[start : start + chunk]
+        local = (adj32 @ M[:, start : start + len(genes)]).toarray().astype(np.float32)
+        frac = (counts[genes].to_numpy(dtype=np.float32) / np.float32(n))[None, :]
+        block = local * inv_neighbors[:, None] / frac - np.float32(1.0)
+        for jj, gene in enumerate(genes):
+            score = block[:, jj]
+            if lcfg.noise_delta > 0:
+                score = score + rng.normal(0, lcfg.noise_delta, size=n).astype(np.float32)
+            members = membership.indices(gene)
+            rows_i.append(members)
+            cols_i.append(np.full(members.size, start + jj, dtype=np.int64))
+            vals.append(score[members])
+            primary = members[labels[members] == gene]
+            self_score[primary] = score[primary]
+            if not large_mode:
+                scores[gene] = score
+            own = score[members]
+            row = {
+                "target_gene": gene,
+                "n_cells": int(members.size),
+                "overall_fraction_pct": float(100.0 * members.size / n),
+                "mean_lochness_all_cells": float(np.nanmean(score)),
+                "mean_lochness_in_own_cells": float(np.nanmean(own)),
+                "median_lochness_in_own_cells": float(np.nanmedian(own)),
+                "max_lochness": float(np.nanmax(score)),
+                "pct_cells_enriched": float(100.0 * np.nanmean(score > lcfg.enrichment_cut)),
+                "pct_own_cells_enriched": float(100.0 * np.nanmean(own > lcfg.enrichment_cut)),
+            }
+            if clusters is not None:
+                per_cluster = pd.Series(score).groupby(clusters).mean()
+                by_cluster_dict[gene] = per_cluster.to_dict()
+                row["top_cluster"] = str(per_cluster.idxmax())
+                row["top_cluster_mean"] = float(per_cluster.max())
+            summary_rows.append(row)
+        logger.info("lochNESS membership progress: %d / %d targets", min(start + chunk, len(candidates)), len(candidates))
+    # NTC-only cells: self-score for the non-targeting group, as in the legacy path
+    ntc_mask = klass == CLASS_NTC
+    if ntc_mask.any():
+        ntc_score = lochness_score(adj, neighbor_counts, ntc_mask.astype(np.float32), float(ntc_mask.mean()))
+        self_score[ntc_mask] = ntc_score[ntc_mask]
+    membership_scores = sparse.csr_matrix(
+        (np.concatenate(vals), (np.concatenate(rows_i), np.concatenate(cols_i))), shape=(n, len(candidates)), dtype=np.float32
+    )
+    summary = pd.DataFrame(summary_rows).sort_values("mean_lochness_in_own_cells", ascending=False).reset_index(drop=True)
+    gc.collect()
+    logger.info("lochNESS membership complete: %d target(s) scored, %d finite self-scores", len(summary), int(np.isfinite(self_score).sum()))
+    return LochnessResults(
+        summary=summary,
+        scores=scores,
+        self_score=self_score,
+        by_cluster=(pd.DataFrame(by_cluster_dict).T if by_cluster_dict else pd.DataFrame()),
+        n_neighbors=int(k_actual),
+        skipped=skipped,
+        note=(
+            "High-MOI membership mode: indicator(t) = cells carrying t; lochness_self = each cell's score for its primary "
+            "target; obsm['lochness_membership'] holds every (cell, carried target) score."
+            + (" Full per-target vectors omitted (LARGE)." if large_mode else "")
+        ),
+        self_only=large_mode,
+        membership_scores=membership_scores,
+        membership_targets=list(candidates),
+        membership_aware=True,
+    )
+
+
 # Attach scores
 
 
@@ -543,4 +682,7 @@ def attach_scores(expr: ad.AnnData, results: Optional[LochnessResults]) -> ad.An
             expr.obs[f"{LOCHNESS_PREFIX}{gene}"] = score.astype(np.float32, copy=False)
     if results.self_score is not None:
         expr.obs[LOCHNESS_SELF] = results.self_score.astype(np.float32, copy=False)
+    if results.membership_scores is not None:
+        expr.obsm["lochness_membership"] = results.membership_scores
+        expr.uns["lochness_membership_targets"] = list(results.membership_targets)
     return expr

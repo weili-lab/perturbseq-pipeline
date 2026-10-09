@@ -186,8 +186,10 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "**Membership-aware statistics:** perturbation strength, cluster enrichment, co-functional modules and perturbation "
             "distance take perturbed = cells carrying the target and `other` = targeting cells not carrying it; every "
             "non-targeting guide is also tested as a negative-control pseudo-target (`NTC:<guide>`), giving the empirical "
-            "false-positive rate below. Per-cell scores (PS, lochNESS) and the knockdown filter still use each cell's primary "
-            f"(highest-UMI) target. The full membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
+            "false-positive rate below. Per-cell PS and lochNESS scores are computed for every (cell, carried target) pair "
+            "(`obsm['ps_score_membership']`, `obsm['lochness_membership']`); `obs['ps_score']` / `obs['lochness_self']` hold each "
+            "cell's score for its primary (highest-UMI) target. The knockdown filter still uses the primary target. "
+            f"The full membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
             "",
             T("high_moi_calling"),
             "Rank-ordered guide UMI profile (median and p10-p90 of the k-th ranked guide per cell):",
