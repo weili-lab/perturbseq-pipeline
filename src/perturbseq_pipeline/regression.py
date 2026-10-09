@@ -20,13 +20,16 @@ the cell <-> guide link. They are used twice:
 
 * calibration (genomic control): per target, ``lambda = max(1, median(null t²) /
   median(t² under the t distribution))``; the observed t is divided by
-  ``sqrt(lambda)`` before its two-sided t-test p-value (residual df), and BH runs
-  across genes within the target (the modules convention; ``fdr_scope: global``
-  runs it over all (target, gene) pairs, which controls the FDR of the whole
-  call set rather than per target);
-* check: the same calls are made on every permuted data set; the mean number of
-  permuted (target, gene) pairs passing the FDR cut over the observed number is
-  reported as the empirical FDR of the call set (``regression_design``).
+  ``sqrt(lambda)`` before its two-sided t-test p-value (effective residual df
+  ``n - tr(H)``); BH runs over all (target, gene) pairs (``fdr_scope: global``,
+  the default) or across genes within each target (``target``, the modules
+  convention, which does not control false calls across targets);
+* check: the same calls are made on every permuted data set. The mean number
+  of permuted calls over the observed number is the empirical FDR of the call
+  set, for (target, gene) pairs (``empirical_fdr``) and for targets with >= 1
+  DE gene (``empirical_target_fdr``), in ``regression_design``. The
+  permutations make every target null, so both are conservative; they reuse the
+  permutations that set lambda, so they are not an independent check.
 
 A purely empirical p-value is not used: it cannot go below
 ``1 / (1 + n_permutations * genes)``, which caps the BH q of a target with a
@@ -330,6 +333,7 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
     fdr = _bh(pval, rcfg.fdr_scope)
     # the permuted calls use the same criteria as the reported calls (FDR and, if set, |log2fc|)
     n_sig_null = np.zeros(n_perm, dtype=np.int64)
+    n_tgt_null = np.zeros(n_perm, dtype=np.int64)  # targets with >= 1 permuted call
     for d in range(n_perm):
         cols = slice(d * G, (d + 1) * G)
         p0 = 2.0 * _tdist.sf(null[:, cols].astype(np.float64) / scale, residual_df)
@@ -337,6 +341,7 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
         if null_lfc is not None:
             call0 &= null_lfc[:, cols] > rcfg.min_abs_log2fc
         n_sig_null[d] = int(call0.sum())
+        n_tgt_null[d] = int(call0.any(axis=1).sum())
     del null, null_lfc
     perm_mean_sig = float(n_sig_null.mean())
     log2fc = coef_all / _LN2
@@ -400,6 +405,10 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
         "gc_lambda_max": float(lam.max()),
         "perm_mean_significant_pairs": perm_mean_sig,
         "empirical_fdr": (perm_mean_sig / int(sig.sum())) if sig.any() else float("nan"),
+        "perm_mean_targets_with_de": float(n_tgt_null.mean()),
+        "empirical_target_fdr": (float(n_tgt_null.mean()) / int((sig.sum(axis=1) > 0).sum()))
+        if sig.any()
+        else float("nan"),
     }
     design_tbl = pd.DataFrame([(k, v) for k, v in info.items()], columns=["metric", "value"])
     design_tbl["value"] = design_tbl["value"].astype(str)

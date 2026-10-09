@@ -178,14 +178,18 @@ def test_global_fdr_scope_controls_the_call_set():
     Y = rng.normal(2.0, 0.5, size=(1500, 50))
     Y[T[:, 0] == 1, :10] -= 0.6  # one real target
     a = _membership_adata(T, Y, [f"T{j}" for j in range(k)])
-    per_target = reg_mod.run_regression(a, _cfg(batch_key=None))
-    glob = reg_mod.run_regression(a, _cfg(batch_key=None, fdr_scope="global"))
+    per_target = reg_mod.run_regression(a, _cfg(batch_key=None, fdr_scope="target"))
+    glob = reg_mod.run_regression(a, _cfg(batch_key=None))  # global is the default
+    assert Config().regression.fdr_scope == "global"
     for res in (per_target, glob):
         assert (res.fdr.loc["T0"].iloc[:10] < 0.05).all()
     false_pt = per_target.info["n_significant_pairs"] - 10
     false_gl = glob.info["n_significant_pairs"] - 10
     assert false_gl <= 2 and false_gl <= false_pt
     assert glob.info["empirical_fdr"] < 0.2
+    # target level: per-target BH lets null targets through, the empirical target FDR shows it
+    assert per_target.info["perm_mean_targets_with_de"] >= glob.info["perm_mean_targets_with_de"]
+    assert glob.info["n_targets_with_de"] >= 1 and np.isfinite(glob.info["empirical_target_fdr"])
     np.testing.assert_allclose(per_target.pval.to_numpy(), glob.pval.to_numpy())  # same p-values, other family
 
 

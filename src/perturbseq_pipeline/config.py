@@ -452,10 +452,12 @@ class RegressionConfig:
     #: Include ``log(obs['total_counts'])`` (depth) as a covariate.
     depth_covariate: bool = True
     fdr_alpha: float = 0.05
-    #: BH family: ``target`` (genes within each target, as in ``modules``) or
-    #: ``global`` (all target x gene pairs; controls the FDR of the whole call
-    #: set, which per-target BH does not when many targets are null).
-    fdr_scope: str = "target"
+    #: BH family: ``global`` (all target x gene pairs; controls the FDR of the
+    #: whole call set) or ``target`` (genes within each target, the ``modules``
+    #: convention). Per-target BH does not control the false calls across
+    #: targets: on the ESC full-scale screen (2,084 targets) it left ~1/3 of the
+    #: targets with a DE gene expected false (empirical target FDR 0.32 vs 0.016).
+    fdr_scope: str = "global"
     #: A significant pair also needs ``|log2fc|`` above this.
     min_abs_log2fc: float = 0.0
 
