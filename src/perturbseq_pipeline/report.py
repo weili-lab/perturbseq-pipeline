@@ -154,6 +154,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "clusters",
             "perturbation",
             "skipped",
+            "regression_design",
+            "regression_summary",
             "manifest",
             "enrichment",
             "enrichment_pseudo_summary",

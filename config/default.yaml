@@ -210,6 +210,17 @@ knockdown_filter:
   max_rho: 0.3
   max_escaper_fraction: 0.5
   min_escaper_prob: 0.9
+regression:
+  enabled: false
+  genes: modules
+  min_cells: 10
+  ridge_alpha: 1.0
+  n_permutations: 10
+  batch_key: lane_id
+  n_guides_covariate: true
+  depth_covariate: true
+  fdr_alpha: 0.05
+  min_abs_log2fc: 0.0
 enrichment:
   enabled: true
   cluster_key: leiden
@@ -263,6 +274,7 @@ modules:
     max_genes: 1500
     top_terms_per_program: 5
     require: false
+  effect_source: pseudobulk
 ps_score:
   enabled: false
   require: false

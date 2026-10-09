@@ -391,6 +391,33 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "",
         ]
     # ---- optional stages: only the ones that produced a table in this run -------------------------
+    if "regression_design" in tables:
+        r = cfg.regression
+        L += [
+            H("Membership regression (high-MOI)"),
+            "",
+            "All targets fitted jointly, one linear model per gene over the assigned cells (targeting + NTC-only): "
+            "`lognorm ~ membership (all targets)"
+            + (" + n_guides" if r.n_guides_covariate else "")
+            + (" + log(total_counts)" if r.depth_covariate else "")
+            + (f" + {r.batch_key}" if r.batch_key else "")
+            + f"`, ridge penalty {r.ridge_alpha:g} on the membership coefficients. Unlike the pseudobulk contrasts, "
+            "each effect is adjusted for the targets co-carried in the same cells. "
+            f"Permutations ({r.n_permutations}; membership rows shuffled across cells{f' within `{r.batch_key}`' if r.batch_key else ''}) "
+            "calibrate each target's t statistic (genomic control: divided by sqrt(lambda), lambda = permuted median t² / its "
+            "expected value, at least 1) before the t-test p-value; BH across genes within each target; "
+            f"significant at FDR < {r.fdr_alpha}"
+            + (f" and |log2fc| > {r.min_abs_log2fc:g}" if r.min_abs_log2fc > 0 else "")
+            + ". The same calls made on the permuted data give the empirical FDR of the call set "
+            "(`perm_mean_pairs_fdr_pass` / `n_pairs_fdr_pass` = `empirical_fdr` below)"
+            + ". `log2fc` = lognorm coefficient / ln 2 (log2 ratio of geometric means of normalised counts + 1). "
+            "Full matrices: `tables/regression_effect_matrix.csv`, `tables/regression_fdr.csv`; pairs: `tables/regression_de.csv`.",
+            "",
+            T("regression_design"),
+            "",
+            T("regression_summary", 60),
+            "",
+        ]
     if "enrichment" in tables:
         e = cfg.enrichment
         L += [

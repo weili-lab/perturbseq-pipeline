@@ -418,6 +418,45 @@ class PerturbationConfig:
 
 
 # ===========================================================================
+# Membership regression (high-MOI)
+# ===========================================================================
+
+
+@dataclass
+class RegressionConfig:
+    """Joint membership regression (``guides.assignment_mode: high_moi`` only).
+
+    Per gene ``lognorm ~ membership (all targets) + n_guides + log(total_counts)
+    + lane``, ridge-penalised membership coefficients; t-test p-values calibrated
+    per target on permutations (membership rows shuffled within ``batch_key``),
+    BH within target, and an empirical FDR of the call set from the same
+    permutations. See ``regression.py``.
+    """
+
+    #: Optional stage, off by default; set ``enabled: true`` to run it.
+    enabled: bool = False
+    #: Genes to fit: ``modules`` (the modules stage's gene selection, so the
+    #: matrix can replace its effect matrix), ``hvg`` or ``all``.
+    genes: str = "modules"
+    #: Targets with fewer member cells stay in the design but are not reported.
+    min_cells: int = 10
+    #: L2 penalty on the membership coefficients (covariates are unpenalised).
+    ridge_alpha: float = 1.0
+    #: Permutations of the membership rows (genomic-control calibration and the
+    #: empirical-FDR check). Memory: 4 bytes x reported targets x genes x this.
+    n_permutations: int = 10
+    #: obs column used as lane covariate and permutation stratum; ``null`` = none.
+    batch_key: Optional[str] = "lane_id"
+    #: Include ``obs['n_guides_assigned']`` (guide burden) as a covariate.
+    n_guides_covariate: bool = True
+    #: Include ``log(obs['total_counts'])`` (depth) as a covariate.
+    depth_covariate: bool = True
+    fdr_alpha: float = 0.05
+    #: A significant pair also needs ``|log2fc|`` above this.
+    min_abs_log2fc: float = 0.0
+
+
+# ===========================================================================
 # Knockdown filter
 # ===========================================================================
 
@@ -557,6 +596,10 @@ class ModulesConfig:
     top_n_report: int = 12
     #: Biological pathway enrichment and functional annotation for gene programs.
     program_enrichment: ProgramEnrichmentConfig = field(default_factory=ProgramEnrichmentConfig)
+    #: Effect matrix the modules are built from: ``pseudobulk`` (log2FC of each
+    #: perturbation vs control) or ``regression`` (the membership regression's
+    #: adjusted log2 effects and FDR; needs ``regression.enabled``, high-MOI only).
+    effect_source: str = "pseudobulk"
 
 
 # ===========================================================================
@@ -1170,6 +1213,7 @@ class Config:
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
     knockdown_filter: KnockdownFilterConfig = field(default_factory=KnockdownFilterConfig)
+    regression: RegressionConfig = field(default_factory=RegressionConfig)
     enrichment: EnrichmentConfig = field(default_factory=EnrichmentConfig)
     modules: ModulesConfig = field(default_factory=ModulesConfig)
     ps_score: PSScoreConfig = field(default_factory=PSScoreConfig)
@@ -1367,6 +1411,24 @@ class Config:
         if not (0 < self.perturbation.umap_background_fraction <= 1):
             raise ValueError("perturbation.umap_background_fraction must be in (0, 1]")
         # ==============================================================
+        # Membership regression
+        # ==============================================================
+        reg = self.regression
+        if reg.enabled and self.guides.assignment_mode != "high_moi":
+            raise ValueError("regression.enabled needs guides.assignment_mode: high_moi")
+        if reg.genes not in ("modules", "hvg", "all"):
+            raise ValueError(f"regression.genes must be 'modules', 'hvg' or 'all' (got {reg.genes!r})")
+        if reg.min_cells < 1:
+            raise ValueError("regression.min_cells must be >= 1")
+        if reg.ridge_alpha < 0:
+            raise ValueError("regression.ridge_alpha must be >= 0")
+        if reg.n_permutations < 1:
+            raise ValueError("regression.n_permutations must be >= 1 (the FDR is permutation-based)")
+        if not (0 < reg.fdr_alpha < 1):
+            raise ValueError("regression.fdr_alpha must be in (0, 1)")
+        if reg.min_abs_log2fc < 0:
+            raise ValueError("regression.min_abs_log2fc must be >= 0")
+        # ==============================================================
         # Knockdown filter
         # ==============================================================
         k = self.knockdown_filter
@@ -1421,6 +1483,10 @@ class Config:
             raise ValueError("modules.linkage_method must be a supported scipy hierarchical linkage method")
         if not (0 < modules.de_fdr_alpha < 1):
             raise ValueError("modules.de_fdr_alpha must be in (0, 1)")
+        if modules.effect_source not in ("pseudobulk", "regression"):
+            raise ValueError(f"modules.effect_source must be 'pseudobulk' or 'regression' (got {modules.effect_source!r})")
+        if modules.effect_source == "regression" and modules.enabled and not self.regression.enabled:
+            raise ValueError("modules.effect_source 'regression' needs regression.enabled: true")
         for name in ("n_programs", "n_modules"):
             value = getattr(modules, name)
             if value is not None and value < 2:

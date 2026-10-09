@@ -169,7 +169,9 @@ Stages 5 to 11 are enabled per section (`enrichment.enabled`,
 defaults keep a run light: cluster enrichment and the master table are on,
 the other five are off until the config enables them (the demo config turns
 on PS score, lochNESS and modules). A disabled stage writes nothing and
-appears as `disabled` in the report's module status table.
+appears as `disabled` in the report's module status table. High-MOI runs have
+one more optional stage between 4 and 5, the membership regression
+(`regression.enabled`; see [docs/high_moi_assignment.md](docs/high_moi_assignment.md)).
 
 ---
 
@@ -514,6 +516,7 @@ output:
 | `obs['n_guides_assigned']`, `n_targets_assigned`, `n_guides_called`, `is_ntc_only` | high-MOI mode: membership counts per cell (`n_guides_called` = before the per-cell cap) |
 | `tables/enrichment_pseudo_targets.csv`, `enrichment_pseudo_summary.csv` | high-MOI mode: non-targeting guides tested as negative-control pseudo-targets and the empirical false-positive rate |
 | `obsm['ps_score_membership']`, `obsm['lochness_membership']` | high-MOI mode: per-(cell, carried target) PS and lochNESS scores (sparse); `obs['ps_score']` / `lochness_self` = the primary target's value |
+| `tables/regression_*.csv` | high-MOI mode with `regression.enabled`: joint membership regression (effects adjusted for co-carried targets), permutation-calibrated FDR; `modules.effect_source: regression` builds the modules from it |
 | `obs['total_guide_counts']`, `n_guides_detected` | guide depth and MOI |
 | `obs['leiden']`, `obsm['X_umap']` | clustering and embedding |
 | `obs['ps_score']`, `lochness_self`, `obsm['X_lda_umap']` | per-cell scores from the optional stages |

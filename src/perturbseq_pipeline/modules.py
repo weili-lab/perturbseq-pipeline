@@ -823,10 +823,23 @@ def _score_programs(
 # Orchestrator
 
 
-def compute_modules(expr: ad.AnnData, cfg: Config) -> Optional[ModulesResults]:
-    """Run the adaptive module/program analysis."""
+def compute_modules(expr: ad.AnnData, cfg: Config, regression=None) -> Optional[ModulesResults]:
+    """Run the adaptive module/program analysis.
+
+    With ``modules.effect_source: regression`` the effect matrix and DE mask come
+    from ``regression`` (a :class:`~perturbseq_pipeline.regression.RegressionResults`)
+    instead of the pseudobulk contrast; everything downstream is unchanged.
+    """
     mcfg = cfg.modules
+    use_regression = mcfg.effect_source == "regression"
+    source_note = ""
+    if use_regression and regression is None:
+        logger.warning("modules: effect_source is 'regression' but no regression result exists — using pseudobulk")
+        use_regression = False
+        source_note = "effect_source 'regression' requested but the regression produced no result; pseudobulk used. "
     targets = select_perturbations(expr, cfg)
+    if use_regression:
+        targets = [t for t in targets if t in regression.log2fc.index]
     if len(targets) < mcfg.min_perturbations:
         logger.info(
             "modules: only %d perturbation(s) with >=%d cells (need %d) — skipping.",
@@ -843,12 +856,17 @@ def compute_modules(expr: ad.AnnData, cfg: Config) -> Optional[ModulesResults]:
         expr.n_obs,
         len(targets),
     )
-    genes = select_genes(expr, cfg, large_mode=large_mode)
+    genes = list(regression.log2fc.columns) if use_regression else select_genes(expr, cfg, large_mode=large_mode)
     if len(genes) < mcfg.min_genes:
         logger.info("modules: only %d selected gene(s) (need %d) — skipping.", len(genes), mcfg.min_genes)
         return None
     # Effect matrix
-    effect, control, de_mask = build_effect_matrix(expr, genes, targets, cfg)
+    if use_regression:
+        effect = regression.log2fc.loc[targets, genes].copy()
+        de_mask = (regression.fdr.loc[targets, genes] < mcfg.de_fdr_alpha) & (effect.abs() > mcfg.hub_lfc_threshold)
+        control = "regression"
+    else:
+        effect, control, de_mask = build_effect_matrix(expr, genes, targets, cfg)
     n_cells = expr.obs[OBS_TARGET].astype(str).value_counts()
     logger.info(
         "modules: effect matrix %d perturbations x %d genes "
@@ -950,15 +968,21 @@ def compute_modules(expr: ad.AnnData, cfg: Config) -> Optional[ModulesResults]:
                 enrichment_error,
             )
     # Result
-    note = (
-        "STANDARD mode: original dense selected-gene implementation."
-        if not large_mode
-        else (
-            "LARGE mode: marker discovery used a bounded cluster-stratified "
-            "cell sample; perturbation effects used all cells through sparse, "
-            f"{cfg.scaling.effect_gene_chunk}-gene chunked sufficient statistics."
+    if use_regression:
+        note = (
+            "Effect matrix = membership-regression log2 effects (adjusted for co-carried targets and covariates), "
+            "DE = regression permutation FDR; genes = the regression's gene set."
         )
-    )
+    else:
+        note = source_note + (
+            "STANDARD mode: original dense selected-gene implementation."
+            if not large_mode
+            else (
+                "LARGE mode: marker discovery used a bounded cluster-stratified "
+                "cell sample; perturbation effects used all cells through sparse, "
+                f"{cfg.scaling.effect_gene_chunk}-gene chunked sufficient statistics."
+            )
+        )
     return ModulesResults(
         effect_matrix=effect,
         gene_programs=programs_table,

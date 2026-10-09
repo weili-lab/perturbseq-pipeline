@@ -262,6 +262,19 @@ in <code>tables/pair_perturbation_by_target.csv</code>; per-target ECDFs in <cod
 </div>
 {% endif %}
 
+{% if tables.regression_summary %}
+<h3 id="regression">3b. Membership regression (high-MOI)</h3>
+<p class="lede">
+  All targets fitted jointly, one linear model per gene over the assigned cells, with covariates and a ridge
+  penalty on the membership coefficients, so each effect is adjusted for the targets co-carried in the same
+  cells. Permutations (membership rows shuffled within lanes) calibrate each target's t statistic (genomic
+  control) and give the empirical FDR of the call set (<code>empirical_fdr</code>); BH across genes within each target.
+  Full matrices are in <code>tables/regression_effect_matrix.csv</code> and <code>tables/regression_fdr.csv</code>.
+</p>
+{{ tables.regression_design }}
+<div class="scroll">{{ tables.regression_summary }}</div>
+{% endif %}
+
 <!-- ===================== 4. Enrichment ===================== -->
 {% if enrichment %}
 <h2 id="enrichment">4. Perturbation enrichment across clusters</h2>
