@@ -544,8 +544,9 @@ def _check_guide_qc_high_moi(expr: ad.AnnData, cfg: Config) -> List[str]:
         warnings.append(
             f"Only {n_ntc_only} NTC-only cells (cells carrying non-targeting guides and no targeting guide); "
             f"perturbation.min_control_cells is {cfg.perturbation.min_control_cells}, so the 'ntc' control arm "
-            "is skipped. In a high-MOI design the usable control is 'other' (cells not carrying the target): "
-            "set perturbation.primary_control: other."
+            "is skipped. Use the 'other' arm (perturbation.primary_control: other). In this version 'other' means "
+            "cells whose PRIMARY target is another gene; they can still carry the tested target as a secondary "
+            "membership, which dilutes the comparison."
         )
     over_cap = int(counts.get(CLASS_AMBIGUOUS, 0))
     if over_cap / max(n, 1) > 0.05:
@@ -555,7 +556,8 @@ def _check_guide_qc_high_moi(expr: ad.AnnData, cfg: Config) -> List[str]:
             "Check the rank-ordered guide UMI profile; raise the cap only if the knee supports it."
         )
     warnings.append(
-        "High-MOI mode: the stages below test every cell under its PRIMARY (highest-UMI) target only. "
+        "High-MOI mode: the stages below test every cell under its PRIMARY (highest-UMI) target only, and the "
+        "'other' control is cells with a different primary target (not 'cells not carrying the target'). "
         "The full cells x targets membership is stored in obsm['"
         f"{hcfg.membership_obsm_key}'] (targets in uns['membership_targets']); membership-aware "
         "perturbation / enrichment statistics are not yet part of this pipeline version."

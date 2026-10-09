@@ -58,7 +58,7 @@ at a few UMIs, and the threshold should fall in the gap.
 | `obs['perturbation_class']` | `targeting` / `non-targeting` (NTC-only) / `ambiguous` (above the cap) / `unassigned` (no called guide) |
 | `obs['target_gene']`, `obs['guide_id']` | **primary label**: the cell's highest-UMI targeting guide (NTC guide for NTC-only cells) |
 | `obs['top_guide_count']`, `second_guide_count`, `total_guide_counts`, `n_guides_detected` | the same diagnostics the single-guide path writes |
-| `tables/guide_assignment.csv` | per target: `n_cells` (membership), `n_cells_primary` (primary label), `testable` |
+| `tables/guide_assignment.csv` | per target: `n_cells` (membership), `n_cells_primary` (primary label), `testable` (enough primary-label cells: what the downstream stages test in this version), `testable_membership` (enough member cells) |
 | `tables/guide_representation.csv` | per guide: cells carrying it (membership) and as primary label |
 | `tables/high_moi_calling.csv`, `high_moi_rank_umi_profile.csv`, `high_moi_cells_per_target.csv` | calling summary (overall and per lane), knee profile, cells per target |
 | `<run>_guide_barcodes.txt` | the long guide table gains an `is_member` column |
@@ -67,8 +67,9 @@ at a few UMIs, and the threshold should fall in the gap.
 
 Every later stage (clustering, perturbation strength, enrichment, modules, PS
 score, lochNESS, distance) reads `obs['target_gene']` / `obs['perturbation_class']`
-and therefore tests each cell under its **primary target only**. The report
-says so in its warnings. Membership-aware statistics (perturbed = cells
+and therefore tests each cell under its **primary target only**; the `other`
+control is cells with a different primary target, which may still carry the
+tested target as a secondary membership. The report says so in its warnings. Membership-aware statistics (perturbed = cells
 carrying the target, control = assigned cells not carrying it, non-targeting
 guides as negative-control pseudo-targets) are the next step and will read the
 `obsm` matrices; the `single_guide` and `dual_guide_pair` modes are not affected

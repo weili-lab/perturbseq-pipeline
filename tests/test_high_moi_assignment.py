@@ -188,7 +188,10 @@ def test_summary_tables_count_membership_not_primary_labels():
     summ = membership_assignment_summary(res, cfg).set_index(OBS_TARGET)
     assert summ.loc["X", "n_cells"] == 3 and summ.loc["X", "n_cells_primary"] == 3
     assert summ.loc["Y", "n_cells"] == 2 and summ.loc["Y", "n_cells_primary"] == 1  # ntc_first is primary Y
-    assert summ.loc["Y", "class"] == CLASS_TARGETING and bool(summ.loc["Y", "testable"])
+    assert summ.loc["Y", "class"] == CLASS_TARGETING
+    # legacy meaning kept: Y has 2 member cells but only 1 primary-label cell (< min_cells_per_target = 2)
+    assert not bool(summ.loc["Y", "testable"]) and bool(summ.loc["Y", "testable_membership"])
+    assert bool(summ.loc["X", "testable"]) and bool(summ.loc["X", "testable_membership"])
     assert summ.loc["Z", "n_cells"] == 0 and not bool(summ.loc["Z", "testable"])
     assert summ.loc[cfg.guides.ntc_label, "class"] == CLASS_NTC
     assert summ.loc[cfg.guides.ambiguous_label, "n_cells"] == 1 and summ.loc[cfg.guides.unassigned_label, "n_cells"] == 2
@@ -248,7 +251,7 @@ def test_high_moi_needs_a_guide_matrix():
 
 
 def test_multiplet_flag_disabled_when_expected_guides_is_null():
-    from perturbseq_pipeline.guide_qc import _structure_flags
+    from perturbseq_pipeline.guide_qc import _per_cell_multiplet_rule, _structure_flags
 
     detected = sparse.csr_matrix(np.array([[1, 1, 1], [1, 0, 0], [0, 0, 0]]))
     design = pd.DataFrame({"guide_id": ["a", "b", "c"], "target": ["A", "B", "C"]})
@@ -258,6 +261,13 @@ def test_multiplet_flag_disabled_when_expected_guides_is_null():
     cfg.guides.multiplet.expected_guides_per_cell = None
     _, _, _, multiplet, structure = _structure_flags(detected, design, cfg)
     assert not multiplet.any() and structure.tolist() == [True, True, False]
+    # the same rule serves the basic-QC annotation path (attach_guide_counts); None must not raise there either
+    n_guides = np.array([3, 1, 0])
+    multiplet, structure, rule = _per_cell_multiplet_rule(n_guides, cfg, 3)
+    assert not multiplet.any() and structure.all() and "null" in rule
+    cfg.guides.multiplet.expected_guides_per_cell = 1
+    multiplet, structure, rule = _per_cell_multiplet_rule(n_guides, cfg, 3)
+    assert multiplet.tolist() == [True, False, False] and structure.tolist() == [False, True, False]
 
 
 # Synthetic fixture
@@ -317,8 +327,12 @@ def test_high_moi_end_to_end(tmp_path):
     assert list(result.adata.uns[UNS_TARGETS]) == sorted(KD_TARGETS + NULL_TARGETS) + [cfg.guides.ntc_label]
     outdir = Path(cfg.run.outdir)
     ga = pd.read_csv(outdir / "tables" / "guide_assignment.csv").set_index("target_gene")
-    assert "n_cells_primary" in ga.columns
+    assert "n_cells_primary" in ga.columns and "testable_membership" in ga.columns
     assert ga.loc[KD_TARGETS + NULL_TARGETS, "testable"].all()
+    assert ga.loc[KD_TARGETS + NULL_TARGETS, "testable_membership"].all()
+    # `testable` keeps the legacy meaning: it predicts exactly what the perturbation stage tests
+    pert_tested = set(pd.read_csv(outdir / "tables" / "perturbation_full.csv")["target_gene"])
+    assert set(ga.index[ga["testable"]]) == pert_tested
     assert (ga.loc[KD_TARGETS + NULL_TARGETS, "n_cells"] > ga.loc[KD_TARGETS + NULL_TARGETS, "n_cells_primary"]).all()
     for name in ("high_moi_calling", "high_moi_rank_umi_profile", "high_moi_cells_per_target"):
         assert (outdir / "tables" / f"{name}.csv").is_file(), name
@@ -328,6 +342,9 @@ def test_high_moi_end_to_end(tmp_path):
     assert not pert.loc[NULL_TARGETS, "is_hit_other"].any(), pert.loc[NULL_TARGETS]
     report = (outdir / "report.md").read_text()
     assert "High-MOI guide calling" in report and "primary (highest-UMI) target" in report
+    html = (outdir / cfg.output.report_name).read_text()
+    assert "Membership calling summary" in html and "Cells with &gt;= 1 called guide" in html
+    assert "Rank-ordered guide UMI profile" in html and "median_umi" in html
     assert "PRIMARY (highest-UMI) target only" in report  # the QC warning is listed in the report
     back = ad.read_h5ad(outdir / cfg.output.h5ad_name)
     assert hm.membership_obsm_key in back.obsm and UNS_TARGETS in back.uns

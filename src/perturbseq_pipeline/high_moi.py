@@ -342,10 +342,14 @@ def cells_per_target(expr: ad.AnnData, cfg: Config) -> pd.Series:
 
 
 def membership_assignment_summary(expr: ad.AnnData, cfg: Config) -> pd.DataFrame:
-    """Per-target membership counts and testability (same columns as the legacy table).
+    """Per-target membership counts and testability (legacy columns plus membership ones).
 
     ``n_cells`` counts every cell carrying the target; ``n_cells_primary`` the
     cells whose primary label is the target (what the legacy table would show).
+    ``testable`` keeps its legacy meaning — enough **primary-label** cells for
+    the downstream stages, which test each cell under its primary target in
+    this version — and ``testable_membership`` says whether the target has
+    enough member cells for membership-aware statistics.
     """
     gcfg = cfg.guides
     counts = cells_per_target(expr, cfg)
@@ -369,11 +373,10 @@ def membership_assignment_summary(expr: ad.AnnData, cfg: Config) -> pd.DataFrame
     tab = pd.DataFrame(rows, columns=[OBS_TARGET, "n_cells", "n_cells_primary", "class"])
     measured = set(expr.var_names)
     tab["detected_in_expression"] = tab[OBS_TARGET].isin(measured)
-    tab["testable"] = (
-        (tab["class"] == CLASS_TARGETING)
-        & tab["detected_in_expression"]
-        & (tab["n_cells"] >= cfg.perturbation.min_cells_per_target)
-    )
+    eligible = (tab["class"] == CLASS_TARGETING) & tab["detected_in_expression"]
+    min_cells = cfg.perturbation.min_cells_per_target
+    tab["testable"] = eligible & (tab["n_cells_primary"] >= min_cells)
+    tab["testable_membership"] = eligible & (tab["n_cells"] >= min_cells)
     return tab.sort_values(["n_cells", OBS_TARGET], ascending=[False, True]).reset_index(drop=True)
 
 
@@ -421,7 +424,11 @@ def high_moi_tables(expr: ad.AnnData, cfg: Config, lane_key: str = "lane_id") ->
         ("Guides per assigned cell (median; p10-p90)", f"{_f(_q(ng[assigned], 50))} ({_f(_q(ng[assigned], 10))}-{_f(_q(ng[assigned], 90))})"),
         ("Targets per assigned cell (median; p10-p90)", f"{_f(_q(nt[assigned], 50))} ({_f(_q(nt[assigned], 10))}-{_f(_q(nt[assigned], 90))})"),
         ("Targets with >= 1 cell", f"{int((targets_only > 0).sum()):,} of {len(targets_only):,}"),
-        (f"Targets with >= {cfg.perturbation.min_cells_per_target} cells", f"{int((targets_only >= cfg.perturbation.min_cells_per_target).sum()):,}"),
+        (f"Targets with >= {cfg.perturbation.min_cells_per_target} member cells", f"{int((targets_only >= cfg.perturbation.min_cells_per_target).sum()):,}"),
+        (
+            f"Targets with >= {cfg.perturbation.min_cells_per_target} primary-label cells (tested downstream in this version)",
+            f"{int((obs.loc[obs[OBS_CLASS].astype(str) == CLASS_TARGETING, OBS_TARGET].astype(str).value_counts() >= cfg.perturbation.min_cells_per_target).sum()):,}",
+        ),
         ("Cells per target (median; p10-p90)", f"{_f(_q(targets_only.to_numpy(), 50))} ({_f(_q(targets_only.to_numpy(), 10))}-{_f(_q(targets_only.to_numpy(), 90))})"),
     ]
     if lane_key in obs.columns:

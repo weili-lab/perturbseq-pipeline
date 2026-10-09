@@ -148,6 +148,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "cell_counts_before_after",
             "pair_perturbation_hit_counts_per_lane",
             "single_guide_diagnostic_vs_pair",
+            "high_moi_calling",
+            "high_moi_rank_umi_profile",
             "cluster_sizes",
             "clusters",
             "perturbation",
