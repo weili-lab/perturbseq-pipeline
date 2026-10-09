@@ -32,12 +32,15 @@ loaded cell is also written to an all-cells `.h5ad` before any filter, so the
 before/after cell counts are on disk, not only in the report.
 
 **2 · Guide assignment**
-Two modes, selected with `guides.assignment_mode`. `single_guide` (the default)
+Three modes, selected with `guides.assignment_mode`. `single_guide` (the default)
 assigns each cell to its dominant guide. `dual_guide_pair` resolves the
 strongest guide of each scaffold class and interprets the pair through an
-optional construct reference. Both write the same `obs['target_gene']` and
-`obs['perturbation_class']` columns, which every later stage reads. See
-[Guide calling](#guide-calling).
+optional construct reference. `high_moi` calls every guide above a per-cell
+threshold and stores a cells x targets membership matrix in
+`obsm['perturbation_membership']` (see [docs/high_moi_assignment.md](docs/high_moi_assignment.md)).
+All three write the same `obs['target_gene']` and `obs['perturbation_class']`
+columns, which every later stage reads; in `high_moi` mode that label is the
+cell's primary (highest-UMI) target. See [Guide calling](#guide-calling).
 
 **3 · Clustering**
 Library-size normalization, log1p, HVG selection, PCA, optional Harmony batch
@@ -434,7 +437,7 @@ results/<run>/
 | `config_path`, `resolved_config` | the config given and the fully resolved copy |
 | `random_seed` | `run.seed` |
 | `input` | every input path with existence and size, the lanes actually loaded, metadata and pair-reference files |
-| `guides.assignment_mode` | `single_guide` or `dual_guide_pair` |
+| `guides.assignment_mode` | `single_guide`, `dual_guide_pair` or `high_moi` |
 | `enabled_modules` | the `enabled` flag of every optional stage |
 | `module_status` | per stage: `completed`, `skipped` (with the reason), or `disabled`, and seconds spent |
 | `execution_mode`, `compute` | STANDARD or LARGE; backend, workers, CPUs seen, GPU present |
@@ -505,6 +508,8 @@ output:
 | `obs['perturbation_class']` | `targeting` / `non-targeting` / `ambiguous` / `unassigned` |
 | `obs['guide_id']`, `top_guide_count`, `second_guide_count` | guide-call diagnostics |
 | `obs['guide_assignment_mode']`, `pair_assignment_status`, `guide_A_*`, `guide_C_*` | pair-mode call and per-slot detail |
+| `obsm['perturbation_membership']`, `obsm['guide_membership']`, `uns['membership_targets']` | high-MOI mode: cells x targets and cells x guides membership (sparse, 0/1) and the target column names |
+| `obs['n_guides_assigned']`, `n_targets_assigned`, `n_guides_called`, `is_ntc_only` | high-MOI mode: membership counts per cell (`n_guides_called` = before the per-cell cap) |
 | `obs['total_guide_counts']`, `n_guides_detected` | guide depth and MOI |
 | `obs['leiden']`, `obsm['X_umap']` | clustering and embedding |
 | `obs['ps_score']`, `lochness_self`, `obsm['X_lda_umap']` | per-cell scores from the optional stages |

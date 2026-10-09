@@ -163,6 +163,15 @@ guides:
     expected_guides_per_cell: 1
     scaffold_purity_min: 0.9
     scaffold_min_reads: 20
+  high_moi:
+    method: threshold
+    min_umi: 10
+    min_frac_of_top: 0.02
+    max_guides_per_cell: 30
+    min_guides_per_cell: 1
+    membership_obsm_key: perturbation_membership
+    guide_membership_obsm_key: guide_membership
+    rank_profile_max_rank: 20
 cluster:
   target_sum: null
   n_top_genes: 3000

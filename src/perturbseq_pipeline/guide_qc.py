@@ -64,6 +64,32 @@ def detected_mask(counts: sp.csr_matrix, threshold: int, min_fraction_of_top: Op
     return out
 
 
+def _per_cell_multiplet_rule(n_guides: np.ndarray, cfg: Config, thr) -> tuple:
+    """No-scaffold multiplet / structure flags and their description.
+
+    ``guides.multiplet.expected_guides_per_cell: null`` (high-MOI designs, where
+    several guides per cell are expected) disables both flags: no cell is a
+    multiplet and every cell with >= 1 guide passes the structure check.
+    """
+    mcfg = cfg.guides.multiplet
+    expected = mcfg.expected_guides_per_cell
+    if expected is None:
+        multiplet = np.zeros(n_guides.shape[0], dtype=bool)
+        structure = np.ones(n_guides.shape[0], dtype=bool)
+        rule = (
+            f"no scaffold classes; guides.multiplet.expected_guides_per_cell is null (high-MOI design): "
+            f"no multiplet flag; structure_pass if n_guides >= 1 (>= {thr} UMIs)"
+        )
+    else:
+        multiplet = n_guides > expected
+        structure = n_guides == expected
+        rule = (
+            f"no scaffold classes: multiplet if n_guides > {expected} "
+            f"(>= {thr} UMIs); structure_pass if n_guides == {expected}"
+        )
+    return multiplet, structure, rule
+
+
 def _structure_flags(detected: sp.csr_matrix, design: pd.DataFrame, cfg: Config):
     """Return (n_guides, n_by_class, n_unknown, multiplet, structure) for a detection mask."""
     mcfg = cfg.guides.multiplet
@@ -88,8 +114,7 @@ def _structure_flags(detected: sp.csr_matrix, design: pd.DataFrame, cfg: Config)
         multiplet |= n_unknown > mcfg.max_guides_per_scaffold
         structure &= n_unknown == 0
     else:
-        multiplet = n_guides > mcfg.expected_guides_per_cell
-        structure = n_guides == mcfg.expected_guides_per_cell
+        multiplet, structure, _ = _per_cell_multiplet_rule(n_guides, cfg, cfg.guides.multiplet.detection_threshold)
     structure &= n_guides >= 1
     return n_guides, n_by_class, n_unknown, multiplet, structure
 
@@ -273,12 +298,7 @@ def attach_guide_counts(expr: ad.AnnData, result: GuideCountResult, design: pd.D
             f"structure_pass if every class has exactly {mcfg.expected_guides_per_scaffold}"
         )
     else:
-        multiplet = n_guides > mcfg.expected_guides_per_cell
-        structure = n_guides == mcfg.expected_guides_per_cell
-        rule = (
-            f"no scaffold classes: multiplet if n_guides > {mcfg.expected_guides_per_cell} "
-            f"(>= {thr} UMIs); structure_pass if n_guides == {mcfg.expected_guides_per_cell}"
-        )
+        multiplet, structure, rule = _per_cell_multiplet_rule(n_guides, cfg, thr)
     obs["guide_multiplet_flag"] = multiplet
     obs["guide_structure_pass"] = structure & obs["guide_detected"].to_numpy()
     obs["perturbation_assignable"] = False

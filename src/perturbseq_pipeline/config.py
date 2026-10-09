@@ -304,9 +304,11 @@ class GuideConfig:
     ambiguous_label: str = "ambiguous"
     ntc_label: str = "non-targeting"
     # Assignment mode (single-guide dominance vs dual-guide pair)
-    #: ``single_guide`` (historical top-1 dominance rule) or ``pair`` (alias
+    #: ``single_guide`` (historical top-1 dominance rule), ``pair`` (alias
     #: ``dual_guide_pair``): strongest scaffold-A + strongest scaffold-C guide,
-    #: interpreted through the pair reference; see ``dual_guides.py``.
+    #: interpreted through the pair reference; see ``dual_guides.py``), or
+    #: ``high_moi`` (multi-guide membership per cell; see ``high_moi.py`` and
+    #: the ``high_moi`` block below).
     assignment_mode: str = "single_guide"
     #: Pair reference table (CSV/TSV, one row per designed guide): alias of
     #: ``pair_map_file`` used by the pair workflow; whichever is set is used.
@@ -370,6 +372,8 @@ class GuideConfig:
     fastq: "GuideFastqConfig" = field(default_factory=lambda: GuideFastqConfig())
     #: Guide-derived multiplet flagging (annotation only).
     multiplet: "GuideMultipletConfig" = field(default_factory=lambda: GuideMultipletConfig())
+    #: High-MOI membership calling (``assignment_mode: high_moi``).
+    high_moi: "HighMoiConfig" = field(default_factory=lambda: HighMoiConfig())
 
 
 # ===========================================================================
@@ -1083,6 +1087,39 @@ class GuideFastqConfig:
 
 
 @dataclass
+class HighMoiConfig:
+    """Membership calling for high-MOI screens (``guides.assignment_mode: high_moi``).
+
+    A cell is a member of every guide whose UMI count passes the call; the
+    cells x guides and cells x targets membership matrices are stored in
+    ``obsm`` and the highest-UMI targeting guide is written to the legacy
+    ``obs['target_gene']`` / ``obs['guide_id']`` columns as the primary label.
+    """
+
+    #: ``threshold``: a guide is a member when ``umi >= min_umi`` and
+    #: ``umi >= min_frac_of_top * top_umi`` of the cell. ``knee``: per cell, the
+    #: largest drop in ``log1p(umi)`` between consecutive ranked guides (among
+    #: guides with ``>= min_umi`` UMIs) separates members from background.
+    method: str = "threshold"
+    #: Minimum UMIs for a guide to be called in a cell.
+    min_umi: int = 10
+    #: ``threshold`` method only: a guide also needs this fraction of the cell's
+    #: top guide UMI count (depth-aware ambient filter). 0 disables it.
+    min_frac_of_top: float = 0.02
+    #: Cells with more called guides than this are classed ``ambiguous``
+    #: (doublet-like) and carry no membership.
+    max_guides_per_cell: int = 30
+    #: Cells with fewer called guides than this (but at least one) are
+    #: ``unassigned``.
+    min_guides_per_cell: int = 1
+    #: ``obsm`` keys of the membership matrices.
+    membership_obsm_key: str = "perturbation_membership"
+    guide_membership_obsm_key: str = "guide_membership"
+    #: Ranks summarised in the rank-ordered guide UMI profile (knee diagnostic).
+    rank_profile_max_rank: int = 20
+
+
+@dataclass
 class GuideMultipletConfig:
     """Guide-derived multiplet flagging (annotation only)."""
 
@@ -1102,8 +1139,9 @@ class GuideMultipletConfig:
     max_guides_per_scaffold: int = 1
     #: Expected detected guides per scaffold class for ``guide_structure_pass``.
     expected_guides_per_scaffold: int = 1
-    #: Used when no scaffold classes are available.
-    expected_guides_per_cell: int = 1
+    #: Used when no scaffold classes are available. ``null`` disables the
+    #: per-cell multiplet flag (high-MOI designs).
+    expected_guides_per_cell: Optional[int] = 1
     #: Minimum fraction of reads in the majority scaffold for a guide's
     #: scaffold class to be inferred empirically.
     scaffold_purity_min: float = 0.9
@@ -1249,11 +1287,37 @@ class Config:
             raise ValueError("guides.unassigned_label and guides.ambiguous_label must be different")
         if guide_cfg.ntc_label in {guide_cfg.unassigned_label, guide_cfg.ambiguous_label}:
             raise ValueError("guides.ntc_label must differ from the unassigned and ambiguous labels")
-        if guide_cfg.assignment_mode not in ("single_guide", "dual_guide_pair", "pair"):
+        if guide_cfg.assignment_mode not in ("single_guide", "dual_guide_pair", "pair", "high_moi"):
             raise ValueError(
-                "guides.assignment_mode must be 'single_guide', 'pair' or 'dual_guide_pair', "
+                "guides.assignment_mode must be 'single_guide', 'pair', 'dual_guide_pair' or 'high_moi', "
                 f"got {guide_cfg.assignment_mode!r}"
             )
+        hm = guide_cfg.high_moi
+        if hm.method not in ("threshold", "knee"):
+            raise ValueError(f"guides.high_moi.method must be 'threshold' or 'knee', got {hm.method!r}")
+        if hm.min_umi < 1:
+            raise ValueError("guides.high_moi.min_umi must be >= 1")
+        if not (0 <= hm.min_frac_of_top < 1):
+            raise ValueError("guides.high_moi.min_frac_of_top must be in [0, 1)")
+        if hm.max_guides_per_cell < 1 or hm.min_guides_per_cell < 1:
+            raise ValueError("guides.high_moi.max_guides_per_cell and min_guides_per_cell must be >= 1")
+        if hm.min_guides_per_cell > hm.max_guides_per_cell:
+            raise ValueError("guides.high_moi.min_guides_per_cell must not exceed max_guides_per_cell")
+        if hm.rank_profile_max_rank < 2:
+            raise ValueError("guides.high_moi.rank_profile_max_rank must be >= 2")
+        if not hm.membership_obsm_key or not hm.guide_membership_obsm_key:
+            raise ValueError("guides.high_moi obsm keys must be non-empty")
+        if hm.membership_obsm_key == hm.guide_membership_obsm_key:
+            raise ValueError("guides.high_moi.membership_obsm_key and guide_membership_obsm_key must differ")
+        if self.output.guide_obsm_key in (hm.membership_obsm_key, hm.guide_membership_obsm_key):
+            raise ValueError(
+                "guides.high_moi membership obsm keys must differ from output.guide_obsm_key "
+                f"({self.output.guide_obsm_key!r}): the raw guide counts merged into the processed h5ad would "
+                "overwrite the membership matrix"
+            )
+        mp = guide_cfg.multiplet
+        if mp.expected_guides_per_cell is not None and mp.expected_guides_per_cell < 1:
+            raise ValueError("guides.multiplet.expected_guides_per_cell must be >= 1 or null")
         if guide_cfg.assignment_mode == "pair":
             guide_cfg.assignment_mode = "dual_guide_pair"
         if guide_cfg.pair_reference and not guide_cfg.pair_map_file:

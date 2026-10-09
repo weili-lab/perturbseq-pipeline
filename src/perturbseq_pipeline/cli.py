@@ -464,6 +464,7 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
     unfiltered_h5ad_path: Optional[Path] = None
     qc_before = None  # pre-filter QC metrics of every loaded cell (pair-guide accounting)
     pair_mode = cfg.guides.assignment_mode in ("dual_guide_pair", "pair")
+    high_moi_mode = cfg.guides.assignment_mode == "high_moi"
     # All-cells checkpoint: every loaded cell with QC metrics, written BEFORE
     # any filtering so QC-failed cells are never lost. Previously this file
     # was only written in the assigned_only branch (after QC), which made
@@ -515,7 +516,12 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
     logger.info("=== Stage 3/14: guide assignment ===")
     expr = guides_mod.assign_guides(expr, guides, cfg)
     guide_qc = qc_mod.guide_qc_summary(expr, cfg)
-    guide_assignment = guides_mod.assignment_summary(expr, cfg)
+    if high_moi_mode:
+        from . import high_moi as hm_mod
+
+        guide_assignment = hm_mod.membership_assignment_summary(expr, cfg)
+    else:
+        guide_assignment = guides_mod.assignment_summary(expr, cfg)
     tables["guide_qc"] = guide_qc
     tables["guide_assignment"] = guide_assignment
     _write_table("guide_qc", guide_qc, tabledir, table_paths)
@@ -525,9 +531,17 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
         tables["assignment_per_lane"] = per_lane
         _write_table("assignment_per_lane", per_lane, tabledir, table_paths)
     if guides is not None:
-        guide_representation = guides_mod.guide_representation(guides, expr)
+        if high_moi_mode:
+            guide_representation = hm_mod.membership_guide_representation(guides, expr, cfg)
+        else:
+            guide_representation = guides_mod.guide_representation(guides, expr)
         tables["guide_representation"] = guide_representation
         _write_table("guide_representation", guide_representation, tabledir, table_paths)
+    if high_moi_mode:
+        for name, df in hm_mod.high_moi_tables(expr, cfg).items():
+            tables[name] = df
+            _write_table(name, df, tabledir, table_paths)
+        plots_mod.plot_high_moi_calling(expr, registry, cfg)
     if pair_mode:
         from . import dual_guides as dual_mod
         from . import pair_guide_report as pair_mod

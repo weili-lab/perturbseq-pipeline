@@ -686,6 +686,16 @@ def write_guide_table(guides: ad.AnnData, expr: ad.AnnData, cfg: Config, path: P
         else np.array(["NA"] * guides.n_obs)
     )
     table["assignment"] = assignment[coo.row]
+    if cfg.guides.assignment_mode == "high_moi":
+        # Membership call per (cell, guide) row; the ``assignment`` column keeps the primary label.
+        mkey = cfg.guides.high_moi.guide_membership_obsm_key
+        if mkey in expr.obsm:
+            M = sparse.csr_matrix(expr.obsm[mkey])
+            pos = expr.obs_names.get_indexer(guides.obs_names)
+            member = np.zeros(len(table), dtype=np.int8)
+            present = pos[coo.row] >= 0
+            member[present] = np.asarray(M[pos[coo.row][present], coo.col[present]]).ravel().astype(np.int8)
+            table["is_member"] = member
     # Highest count last within each cell (see docstring).
     table = table.sort_values(["cell", "umi_count"], ascending=[True, True])
     path = Path(path)

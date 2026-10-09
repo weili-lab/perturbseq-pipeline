@@ -36,8 +36,22 @@ def _write_mtx_dir(path: Path, matrix, barcodes: List[str], features: pd.DataFra
         scipy.io.mmwrite(fh, sp.csr_matrix(matrix.T).astype(int), field="integer")
 
 
-def make_lane(outdir: Path, lane_id: str, n_cells: int = 400, seed: int = 0, knockdown_strength: float = 0.15) -> Path:
-    """Write one synthetic lane and return its directory."""
+def make_lane(
+    outdir: Path,
+    lane_id: str,
+    n_cells: int = 400,
+    seed: int = 0,
+    knockdown_strength: float = 0.15,
+    moi: float | None = None,
+) -> Path:
+    """Write one synthetic lane and return its directory.
+
+    ``moi=None`` (default) is the historical one-dominant-guide design and is
+    byte-identical to earlier versions for the same seed. ``moi=k`` draws
+    Poisson(k) distinct guides per cell, each at Poisson(40)+10 UMIs over the
+    Poisson(0.3) background, and knocks down every KD target the cell carries
+    (a high-MOI design).
+    """
     rng = np.random.default_rng(seed)
     gene_names = [f"GENE{i:04d}" for i in range(N_GENES)]
     # Put the perturbation targets in the expression matrix too.
@@ -60,24 +74,42 @@ def make_lane(outdir: Path, lane_id: str, n_cells: int = 400, seed: int = 0, kno
     # Guarantee the target genes are well expressed so knockdown is visible.
     for t in targets:
         expr[:, gene_names.index(t)] = rng.poisson(30, size=n_cells)
-    # --- guide assignment: one dominant guide per cell ---------------------
     n_guides = len(guide_ids)
-    assigned = rng.integers(0, n_guides, size=n_cells)
-    guide_counts = rng.poisson(0.3, size=(n_cells, n_guides))
-    guide_counts[np.arange(n_cells), assigned] += rng.poisson(40, size=n_cells) + 10
-    # 10% of cells get no guide (unassigned) and 10% get a co-dominant second
-    # guide (ambiguous), so the QC categories are exercised.
-    no_guide = rng.random(n_cells) < 0.10
-    guide_counts[no_guide, :] = 0
-    ambiguous = (~no_guide) & (rng.random(n_cells) < 0.10)
-    second = rng.integers(0, n_guides, size=n_cells)
-    guide_counts[ambiguous, second[ambiguous]] = guide_counts[ambiguous, assigned[ambiguous]]
-    # --- apply the ground-truth knockdown ----------------------------------
-    effective = ~no_guide & ~ambiguous
-    for t in KD_TARGETS:
-        col = gene_names.index(t)
-        cells = effective & np.isin(assigned, [i for i, g in enumerate(guide_targets) if g == t])
-        expr[cells, col] = rng.poisson(30 * knockdown_strength, size=int(cells.sum()))
+    if moi is None:
+        # --- guide assignment: one dominant guide per cell -----------------
+        assigned = rng.integers(0, n_guides, size=n_cells)
+        guide_counts = rng.poisson(0.3, size=(n_cells, n_guides))
+        guide_counts[np.arange(n_cells), assigned] += rng.poisson(40, size=n_cells) + 10
+        # 10% of cells get no guide (unassigned) and 10% get a co-dominant second
+        # guide (ambiguous), so the QC categories are exercised.
+        no_guide = rng.random(n_cells) < 0.10
+        guide_counts[no_guide, :] = 0
+        ambiguous = (~no_guide) & (rng.random(n_cells) < 0.10)
+        second = rng.integers(0, n_guides, size=n_cells)
+        guide_counts[ambiguous, second[ambiguous]] = guide_counts[ambiguous, assigned[ambiguous]]
+        # --- apply the ground-truth knockdown ------------------------------
+        effective = ~no_guide & ~ambiguous
+        for t in KD_TARGETS:
+            col = gene_names.index(t)
+            cells = effective & np.isin(assigned, [i for i, g in enumerate(guide_targets) if g == t])
+            expr[cells, col] = rng.poisson(30 * knockdown_strength, size=int(cells.sum()))
+    else:
+        # --- high-MOI: Poisson(moi) distinct guides per cell ---------------
+        n_per_cell = np.minimum(rng.poisson(moi, size=n_cells), n_guides)
+        guide_counts = rng.poisson(0.3, size=(n_cells, n_guides))
+        carried = np.zeros((n_cells, n_guides), dtype=bool)
+        for i in range(n_cells):
+            if n_per_cell[i] > 0:
+                carried[i, rng.choice(n_guides, size=int(n_per_cell[i]), replace=False)] = True
+        guide_counts[carried] += rng.poisson(40, size=int(carried.sum())) + 10
+        no_guide = rng.random(n_cells) < 0.10
+        guide_counts[no_guide, :] = 0
+        carried[no_guide, :] = False
+        for t in KD_TARGETS:
+            col = gene_names.index(t)
+            t_cols = [i for i, g in enumerate(guide_targets) if g == t]
+            cells = carried[:, t_cols].any(axis=1)
+            expr[cells, col] = rng.poisson(30 * knockdown_strength, size=int(cells.sum()))
     barcodes = [f"{lane_id}_CELL{i:05d}-1" for i in range(n_cells)]
     features = pd.DataFrame(
         {
@@ -142,13 +174,13 @@ def make_split_lane(outdir: Path, lane_id: str, n_cells: int = 300, seed: int = 
     return {"gex": str(gex_dir), "guides": str(outdir / lane_id / "sgRNA" / "raw")}
 
 
-def make_dataset(outdir: Path, n_lanes: int = 2, n_cells: int = 400) -> dict:
-    """Write ``n_lanes`` lanes plus a sample metadata CSV."""
+def make_dataset(outdir: Path, n_lanes: int = 2, n_cells: int = 400, moi: float | None = None) -> dict:
+    """Write ``n_lanes`` lanes plus a sample metadata CSV (``moi`` as in :func:`make_lane`)."""
     outdir = Path(outdir)
     lanes = {}
     for i in range(n_lanes):
         lane_id = f"L{i + 1}"
-        lanes[lane_id] = str(make_lane(outdir, lane_id, n_cells=n_cells, seed=i))
+        lanes[lane_id] = str(make_lane(outdir, lane_id, n_cells=n_cells, seed=i, moi=moi))
     meta = pd.DataFrame(
         {
             "lane_id": list(lanes),
