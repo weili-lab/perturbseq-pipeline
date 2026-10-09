@@ -64,14 +64,42 @@ at a few UMIs, and the threshold should fall in the gap.
 | `tables/high_moi_calling.csv`, `high_moi_rank_umi_profile.csv`, `high_moi_cells_per_target.csv` | calling summary (overall and per lane), knee profile, cells per target |
 | `<run>_guide_barcodes.txt` | the long guide table gains an `is_member` column |
 
-## What the downstream stages do in this version
+## What the downstream stages do
 
-Every later stage (clustering, perturbation strength, enrichment, modules, PS
-score, lochNESS, distance) reads `obs['target_gene']` / `obs['perturbation_class']`
-and therefore tests each cell under its **primary target only**; the `other`
-control is cells with a different primary target, which may still carry the
-tested target as a secondary membership. The report says so in its warnings. Membership-aware statistics (perturbed = cells
-carrying the target, control = assigned cells not carrying it, non-targeting
-guides as negative-control pseudo-targets) are the next step and will read the
-`obsm` matrices; the `single_guide` and `dual_guide_pair` modes are not affected
-by this mode (guarded by `tests/test_low_moi_golden.py`).
+**Membership-aware stages** (perturbation strength, cluster enrichment,
+co-functional modules, perturbation distance and distance space) read the
+membership matrix:
+
+* perturbed(*t*) = cells carrying at least one guide of *t*;
+* `other` control = targeting cells that do **not** carry *t* (a cell carrying
+  several targets is a control for every target it does not carry);
+* `ntc` control = NTC-only cells (usually too few in a high-MOI design; the
+  arm is skipped below `perturbation.min_control_cells` and the report says so);
+* in STANDARD and LARGE execution the contingency counts are the same; LARGE
+  builds them once with sparse products (`membership.T @ onehot`), with
+  reference totals counted over *cells*, never summed over target rows.
+
+**Negative-control pseudo-targets** (`guides.high_moi.ntc_pseudo_targets`,
+default on): every non-targeting guide is tested exactly like a target
+(perturbed = cells carrying that NTC guide, `other` = targeting cells not
+carrying it) in the enrichment and distance stages. They have their own BH
+family and never enter the real-target tables; `tables/enrichment_pseudo_targets.csv`
+holds the tests and `tables/enrichment_pseudo_summary.csv` the empirical
+false-positive rate next to the real targets' hit rate. Perturbation strength
+has no pseudo-targets (an NTC guide has no own gene to test).
+
+**Primary-label stages** (per-cell PS scores, lochNESS, the knockdown filter)
+still evaluate each cell under its primary (highest-UMI) target; the report
+warnings say so. `tables/guide_assignment.csv` therefore keeps both
+`testable` (primary-label rule, what those stages use) and `testable_membership`.
+
+Caveats: with ~9 co-carried guides per cell a strong perturbation leaks into
+the `other` control of the targets it co-occurs with (diluted roughly by
+1 / number of targets); a regression estimator that adjusts for co-carried
+guides is the planned next step. Distance-space similarities are inflated by
+shared cells and should be read with that in mind.
+
+Consistency: on cells that carry exactly one target, the membership paths
+reproduce the `single_guide` results to floating-point precision
+(`tests/test_high_moi_membership_stats.py`), and the `single_guide` /
+`dual_guide_pair` modes are unchanged (`tests/test_low_moi_golden.py`).

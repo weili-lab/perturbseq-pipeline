@@ -147,11 +147,20 @@ class ModulesResults:
 
 
 def select_perturbations(expr: ad.AnnData, cfg: Config) -> List[str]:
-    """Targets assigned to enough cells to estimate an effect profile."""
-    klass = expr.obs[OBS_CLASS].astype(str).to_numpy()
-    targets = expr.obs[OBS_TARGET].astype(str).to_numpy()
-    mask = klass == CLASS_TARGETING
-    counts = pd.Series(targets[mask]).value_counts()
+    """Targets assigned to enough cells to estimate an effect profile.
+
+    ``high_moi`` mode counts the cells *carrying* each target (membership).
+    """
+    from .high_moi import membership_index
+
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        counts = membership.counts
+    else:
+        klass = expr.obs[OBS_CLASS].astype(str).to_numpy()
+        targets = expr.obs[OBS_TARGET].astype(str).to_numpy()
+        mask = klass == CLASS_TARGETING
+        counts = pd.Series(targets[mask]).value_counts()
     keep = counts[counts >= cfg.modules.min_cells_per_perturbation].index.tolist()
     return sorted(keep)
 
@@ -331,19 +340,27 @@ def _build_effect_matrix_standard(
     if control == CONTROL_NTC and not base[CONTROL_NTC].any():
         logger.warning("modules: no non-targeting cells; using 'other' control.")
         control = CONTROL_OTHER
+    from .high_moi import membership_index
+
     gene_idx = np.array([expr.var_names.get_loc(gene) for gene in genes])
     log = _dense_layer(expr, gene_idx)
     lin = np.expm1(log)
-    obs_targets = expr.obs[OBS_TARGET].astype(str).to_numpy()
-    target_pos = {target: i for i, target in enumerate(targets)}
-    rows = []
-    cols = []
-    for cell, target in enumerate(obs_targets):
-        j = target_pos.get(target)
-        if j is not None:
-            rows.append(j)
-            cols.append(cell)
-    indicator = sparse.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(targets), expr.n_obs))
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        # perturbation x cell indicator from the membership matrix (a cell may sit in several rows);
+        # the 'other' arithmetic below (totals over targeting CELLS minus own) stays valid.
+        indicator = membership.indicator(targets)
+    else:
+        obs_targets = expr.obs[OBS_TARGET].astype(str).to_numpy()
+        target_pos = {target: i for i, target in enumerate(targets)}
+        rows = []
+        cols = []
+        for cell, target in enumerate(obs_targets):
+            j = target_pos.get(target)
+            if j is not None:
+                rows.append(j)
+                cols.append(cell)
+        indicator = sparse.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(len(targets), expr.n_obs))
     n_p = np.asarray(indicator.sum(axis=1)).ravel()
     n_p_col = n_p[:, None]
     sum_lin = indicator @ lin
@@ -389,8 +406,17 @@ def _build_effect_matrix_standard(
 # LARGE effect matrix helpers
 
 
-def _target_indicator(expr: ad.AnnData, targets: List[str]) -> Tuple[sparse.csr_matrix, np.ndarray]:
-    """Sparse perturbation x cell membership matrix."""
+def _target_indicator(
+    expr: ad.AnnData, targets: List[str], cfg: Optional[Config] = None
+) -> Tuple[sparse.csr_matrix, np.ndarray]:
+    """Sparse perturbation x cell membership matrix (from the membership matrix in ``high_moi`` mode)."""
+    if cfg is not None:
+        from .high_moi import membership_index
+
+        membership = membership_index(expr, cfg)
+        if membership is not None:
+            indicator = membership.indicator(targets)
+            return indicator, np.asarray(indicator.sum(axis=1)).ravel().astype(np.float64)
     target_names = expr.obs[OBS_TARGET].astype(str).to_numpy()
     klass = expr.obs[OBS_CLASS].astype(str).to_numpy()
     target_pos = {target: i for i, target in enumerate(targets)}
@@ -470,7 +496,7 @@ def _build_effect_matrix_large(
         n_genes,
         cfg.scaling.effect_gene_chunk,
     )
-    indicator, n_p = _target_indicator(expr, targets)
+    indicator, n_p = _target_indicator(expr, targets, cfg)
     n_p_col = n_p[:, None]
     if np.any(n_p == 0):
         raise RuntimeError(

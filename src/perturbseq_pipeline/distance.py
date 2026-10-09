@@ -489,9 +489,18 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
     # The 'other' control is every targeting cell, so each target's own cells must be
     # dropped from the control sample inside the worker (as perturbation.py does).
     exclude_self = ctrl_choice == CONTROL_OTHER
-    # Identify all targeting perturbations
+    # Identify all targeting perturbations (membership in high-MOI mode: perturbed = cells carrying the target;
+    # the 'other' control sample then drops those cells in the worker via exclude_self)
+    from .high_moi import membership_index
+
+    membership = membership_index(expr, cfg)
     targeting_mask = klass == CLASS_TARGETING
-    all_targets = sorted(set(targets_col[targeting_mask]))
+    if membership is not None:
+        all_targets = list(membership.targets)
+        if cfg.guides.high_moi.ntc_pseudo_targets:
+            all_targets += [p for p in membership.pseudo_targets if membership.indices(p).size >= dcfg.min_cells]
+    else:
+        all_targets = sorted(set(targets_col[targeting_mask]))
     decision = resolve_stage_backend("distance", cfg, n_cells=expr.n_obs)
     if cfg.compute.log_backend_decisions:
         log_compute_decision(decision)
@@ -503,9 +512,12 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
         decision.n_jobs,
         dcfg.n_permutations,
     )
-    targeting_indices_dict: Dict[str, np.ndarray] = {
-        target: np.flatnonzero((targets_col == target) & targeting_mask) for target in all_targets
-    }
+    if membership is not None:
+        targeting_indices_dict: Dict[str, np.ndarray] = {target: membership.indices(target) for target in all_targets}
+    else:
+        targeting_indices_dict = {
+            target: np.flatnonzero((targets_col == target) & targeting_mask) for target in all_targets
+        }
     # Setup shared array buffer for worker processes
     shm_buffer: Optional[SharedArrayBuffer] = None
     worker_embedding: np.ndarray = embedding
@@ -671,10 +683,17 @@ def compute_distance_space(expr: ad.AnnData, cfg: Config) -> Optional[DistanceSp
     rep_name = dscfg.representation
     embedding = _resolve_representation(expr, rep_name)
     obs = expr.obs
+    from .high_moi import membership_index
+
     targets_col = obs[OBS_TARGET].astype(str).to_numpy()
     klass = obs[OBS_CLASS].astype(str).to_numpy()
     targeting_mask = klass == CLASS_TARGETING
-    all_targets = sorted(set(targets_col[targeting_mask]))
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        # Shared cells between targets inflate pairwise similarity in a high-MOI design; said in the report.
+        all_targets = list(membership.targets)
+    else:
+        all_targets = sorted(set(targets_col[targeting_mask]))
     # Strata for sampling
     strata = None
     if "lane_id" in obs.columns:
@@ -684,7 +703,7 @@ def compute_distance_space(expr: ad.AnnData, cfg: Config) -> Optional[DistanceSp
     target_samples: Dict[str, np.ndarray] = {}
     skipped: List[dict] = []
     for i, target in enumerate(all_targets):
-        pert_mask = (targets_col == target) & targeting_mask
+        pert_mask = membership.mask(target) if membership is not None else (targets_col == target) & targeting_mask
         n_pert = int(pert_mask.sum())
         if n_pert < dscfg.min_cells:
             skipped.append(

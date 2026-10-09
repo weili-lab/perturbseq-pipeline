@@ -156,6 +156,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "skipped",
             "manifest",
             "enrichment",
+            "enrichment_pseudo_summary",
+            "enrichment_pseudo_targets",
             "ps_score",
             "lochness",
             "cofunctional_modules",

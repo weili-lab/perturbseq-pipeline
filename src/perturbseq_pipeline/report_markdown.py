@@ -183,8 +183,11 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             + (f" and >= {hm.min_frac_of_top:g} x the cell's top guide" if hm.method == "threshold" else " and lies above the largest log-UMI drop of the cell")
             + f"; cells with more than {hm.max_guides_per_cell} called guides are classed ambiguous. Non-targeting guides collapse into one `{cfg.guides.ntc_label}` membership column.",
             "",
-            "**Downstream stages in this version test each cell under its primary (highest-UMI) target only.** The full "
-            f"cells x targets membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
+            "**Membership-aware statistics:** perturbation strength, cluster enrichment, co-functional modules and perturbation "
+            "distance take perturbed = cells carrying the target and `other` = targeting cells not carrying it; every "
+            "non-targeting guide is also tested as a negative-control pseudo-target (`NTC:<guide>`), giving the empirical "
+            "false-positive rate below. Per-cell scores (PS, lochNESS) and the knockdown filter still use each cell's primary "
+            f"(highest-UMI) target. The full membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
             "",
             T("high_moi_calling"),
             "Rank-ordered guide UMI profile (median and p10-p90 of the k-th ranked guide per cell):",
@@ -381,6 +384,17 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             T("enrichment", 60),
             "",
         ]
+        if "enrichment_pseudo_summary" in tables:
+            L += [
+                "**Negative controls (high-MOI):** every non-targeting guide was tested exactly like a target "
+                "(perturbed = cells carrying that NTC guide; `other` = targeting cells not carrying it). Their hit rate at the "
+                "same FDR is the empirical false-positive rate of this table; compare it with the real targets' hit rate.",
+                "",
+                T("enrichment_pseudo_summary"),
+                "Pseudo-target tests (strongest first):",
+                "",
+                T("enrichment_pseudo_targets", 20),
+            ]
     if "cofunctional_modules" in tables or "gene_programs" in tables:
         m = cfg.modules
         L += [

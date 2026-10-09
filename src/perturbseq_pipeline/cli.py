@@ -703,6 +703,14 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
         # composition is indexed by target; write directly without reset_index.
         _write_indexed_matrix("enrichment_composition", enrichment.composition, "target_gene", tabledir, table_paths)
         _write_table("enrichment_effect_magnitude", enrichment.effect_magnitude, tabledir, table_paths)
+        if enrichment.membership_aware and not enrichment.pseudo_table.empty:
+            tables["enrichment_pseudo_targets"] = enrichment.pseudo_table
+            _write_table("enrichment_pseudo_targets", enrichment.pseudo_table, tabledir, table_paths)
+            pseudo_summary = pd.DataFrame(
+                [(k, v) for k, v in enrichment.pseudo_summary.items()], columns=["metric", "value"]
+            )
+            tables["enrichment_pseudo_summary"] = pseudo_summary
+            _write_table("enrichment_pseudo_summary", pseudo_summary, tabledir, table_paths)
         tables["enrichment"] = enrichment_fmt
         _table_for_report(
             tables,

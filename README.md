@@ -40,7 +40,9 @@ threshold and stores a cells x targets membership matrix in
 `obsm['perturbation_membership']` (see [docs/high_moi_assignment.md](docs/high_moi_assignment.md)).
 All three write the same `obs['target_gene']` and `obs['perturbation_class']`
 columns, which every later stage reads; in `high_moi` mode that label is the
-cell's primary (highest-UMI) target. See [Guide calling](#guide-calling).
+cell's primary (highest-UMI) target, and the statistical stages (perturbation
+strength, enrichment, modules, distance) use the membership matrix instead, with
+non-targeting guides as negative-control pseudo-targets. See [Guide calling](#guide-calling).
 
 **3 · Clustering**
 Library-size normalization, log1p, HVG selection, PCA, optional Harmony batch
@@ -510,6 +512,7 @@ output:
 | `obs['guide_assignment_mode']`, `pair_assignment_status`, `guide_A_*`, `guide_C_*` | pair-mode call and per-slot detail |
 | `obsm['perturbation_membership']`, `obsm['guide_membership']`, `uns['membership_targets']` | high-MOI mode: cells x targets and cells x guides membership (sparse, 0/1) and the target column names |
 | `obs['n_guides_assigned']`, `n_targets_assigned`, `n_guides_called`, `is_ntc_only` | high-MOI mode: membership counts per cell (`n_guides_called` = before the per-cell cap) |
+| `tables/enrichment_pseudo_targets.csv`, `enrichment_pseudo_summary.csv` | high-MOI mode: non-targeting guides tested as negative-control pseudo-targets and the empirical false-positive rate |
 | `obs['total_guide_counts']`, `n_guides_detected` | guide depth and MOI |
 | `obs['leiden']`, `obsm['X_umap']` | clustering and embedding |
 | `obs['ps_score']`, `lochness_self`, `obsm['X_lda_umap']` | per-cell scores from the optional stages |

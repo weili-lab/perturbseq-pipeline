@@ -306,6 +306,16 @@ in <code>tables/pair_perturbation_by_target.csv</code>; per-target ECDFs in <cod
 
 <h3>4.3 Significant target/cluster pairs</h3>
 <div class="scroll">{{ tables.enrichment }}</div>
+{% if cfg.guides.assignment_mode == 'high_moi' and tables.enrichment_pseudo_summary %}
+<h4>Negative controls: non-targeting guides as pseudo-targets</h4>
+<p class="lede">
+  Every non-targeting guide was tested exactly like a target (perturbed = cells carrying that NTC guide;
+  <code>other</code> = targeting cells not carrying it). Their hit rate at the same FDR is the empirical
+  false-positive rate of the table above; compare it with the real targets' hit rate.
+</p>
+{{ tables.enrichment_pseudo_summary }}
+<div class="scroll">{{ tables.enrichment_pseudo_targets }}</div>
+{% endif %}
 
 <h3>4.4 Strongest cluster shifts</h3>
 <p class="lede">

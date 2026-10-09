@@ -266,6 +266,11 @@ def compute_knockdown_mask(expr: ad.AnnData, cfg: Config) -> Tuple[ad.AnnData, p
     obs = expr.obs
     targets = obs[OBS_TARGET].astype(str).to_numpy()
     klass = obs[OBS_CLASS].astype(str).to_numpy()
+    if cfg.guides.assignment_mode == "high_moi":
+        logger.warning(
+            "knockdown_filter: high-MOI mode evaluates each cell under its PRIMARY target only "
+            "(per-(cell, target) knockdown status is not implemented yet)."
+        )
     contexts = _contexts(expr, cfg)
     context_values = sorted(set(contexts))
     count_model = kcfg.method == "count_model"
