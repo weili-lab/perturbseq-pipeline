@@ -61,8 +61,12 @@ def test_membership_index_sets_and_counts():
     assert ind.shape == (2, res.n_obs) and ind[0].sum() == 3 and ind[1].sum() == 0
     gm = mi.guide_members(res, cfg, "X")
     assert set(gm) == {"X_1", "X_2"} and gm["X_1"].size == 2 and gm["X_2"].size == 1
-    assert mi._guide_matrix(res, cfg)[0] is mi._guide_matrix(res, cfg)[0]  # CSC guide matrix is built once
+    assert mi._guide_matrix()[0] is mi._guide_matrix()[0]  # CSC guide matrix is built once
     assert mi.guide_members(res, cfg, "nope") == {}
+    fresh = MembershipIndex(res, cfg)
+    assert fresh._guide_cache is None and fresh._pseudo is None  # guide-level data is converted lazily
+    fresh.pseudo_targets
+    assert fresh._guide_cache is not None and fresh._guide_matrix()[0] is fresh._guide_matrix()[0]
     assert membership_index(res, Config()) is None  # legacy modes never build an index
 
 
@@ -221,3 +225,68 @@ def test_high_moi_power_and_pseudo_target_fpr(tmp_path):
     assert "negative-control pseudo-target" in report and "empirical" in report.lower()
     assert "PRIMARY (highest-UMI) target" in report  # the QC notice still names the primary-label stages
     assert result.adata.obsm[cfg.guides.high_moi.membership_obsm_key].shape[1] == len(KD_TARGETS + NULL_TARGETS) + 1
+
+
+# Pseudo-only runs: no real target reaches min_cells but NTC guides do
+
+
+def _pseudo_only_object(n_cells=240, seed=0):
+    """Membership contract by hand: one real target with 3 cells, two NTC guides with ~80 cells each, 3 clusters."""
+    import anndata as ad
+    from scipy import sparse
+
+    from perturbseq_pipeline.high_moi import UNS_GUIDE_TARGETS, UNS_GUIDES, UNS_NTC_GUIDES, UNS_TARGETS
+
+    rng = np.random.default_rng(seed)
+    guides = ["T_1", "non_targeting_1", "non_targeting_2"]
+    G = np.zeros((n_cells, 3), dtype=np.int8)
+    G[:3, 0] = 1
+    G[rng.random(n_cells) < 0.35, 1] = 1
+    G[rng.random(n_cells) < 0.35, 2] = 1
+    T = np.zeros((n_cells, 2), dtype=np.int8)
+    T[:, 0] = G[:, 0]
+    T[:, 1] = (G[:, 1] | G[:, 2]).astype(np.int8)
+    klass = np.where(T[:, 0] == 1, "targeting", np.where(T[:, 1] == 1, "non-targeting", "unassigned"))
+    obs = pd.DataFrame(
+        {
+            "perturbation_class": pd.Categorical(klass),
+            "target_gene": pd.Categorical(np.where(T[:, 0] == 1, "T", np.where(T[:, 1] == 1, "non-targeting", "unassigned"))),
+            "leiden": pd.Categorical(rng.choice(["0", "1", "2"], size=n_cells)),
+            "lane_id": pd.Categorical(rng.choice(["L1", "L2"], size=n_cells)),
+        },
+        index=[f"c{i}" for i in range(n_cells)],
+    )
+    expr = ad.AnnData(X=sparse.csr_matrix(np.ones((n_cells, 4))), obs=obs, var=pd.DataFrame(index=list("abcd")))
+    expr.obsm["perturbation_membership"] = sparse.csr_matrix(T)
+    expr.obsm["guide_membership"] = sparse.csr_matrix(G)
+    expr.uns[UNS_TARGETS] = ["T", "non-targeting"]
+    expr.uns[UNS_GUIDES] = guides
+    expr.uns[UNS_NTC_GUIDES] = guides[1:]
+    expr.uns[UNS_GUIDE_TARGETS] = ["T", "non", "non"]
+    cfg = Config()
+    cfg.guides.assignment_mode = "high_moi"
+    cfg.enrichment.min_cells_per_target = 10
+    cfg.enrichment.min_reference_cells = 1
+    cfg.enrichment.controls = ["other", "ntc"]
+    cfg.enrichment.primary_control = "other"
+    cfg.enrichment.permutations = 10
+    cfg.compute.n_jobs = 1
+    return expr, cfg
+
+
+@pytest.mark.parametrize("scaling_mode", ["standard", "large"])
+def test_pseudo_only_enrichment_keeps_negative_controls(scaling_mode):
+    expr, cfg = _pseudo_only_object()
+    cfg.scaling.mode = scaling_mode
+    res = enrich_mod.test_cluster_enrichment(expr, cfg)
+    assert res.membership_aware and res.table.empty and res.composition.empty
+    assert not res.pseudo_table.empty and set(res.pseudo_table["target_gene"]) == {"NTC:non_targeting_1", "NTC:non_targeting_2"}
+    assert res.pseudo_table["fdr"].notna().all() and res.pseudo_summary["n_pseudo_targets"] == 2
+    assert res.pseudo_summary["n_real_tests"] == 0
+    # with 'other' = the 3 targeting cells minus none, the reference is tiny but the test still runs for every cluster
+    assert res.pseudo_table.groupby("target_gene")["cluster"].nunique().eq(3).all()
+    # sanity: without pseudo-targets the stage reports nothing testable at all
+    cfg2 = Config.from_dict(cfg.to_dict())
+    cfg2.guides.high_moi.ntc_pseudo_targets = False
+    out = enrich_mod.test_cluster_enrichment(expr, cfg2)
+    assert out.table.empty and out.pseudo_table.empty and not out.pseudo_summary

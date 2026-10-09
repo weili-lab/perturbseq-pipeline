@@ -498,31 +498,55 @@ class MembershipIndex:
         self.counts = pd.Series(np.asarray(self._csc.sum(axis=0)).ravel().astype(int), index=self.targets)
         self.targeting_mask = np.asarray(self._csc.sum(axis=1)).ravel() > 0
         self.targeting_indices = np.flatnonzero(self.targeting_mask).astype(np.int64)
-        # Pseudo-targets: NTC guides -> member cell indices (any class)
+        # Guide-level data (pseudo-targets, guide concordance) is converted lazily, once, on first use:
+        # the perturbation / modules paths never need it.
         gkey = cfg.guides.high_moi.guide_membership_obsm_key
+        self._guide_src = expr.obsm[gkey] if gkey in expr.obsm else None
+        self._guide_ids: List[str] = [str(g) for g in expr.uns[UNS_GUIDES]] if UNS_GUIDES in expr.uns else []
+        self._guide_targets: List[str] = (
+            [str(t) for t in expr.uns[UNS_GUIDE_TARGETS]] if UNS_GUIDE_TARGETS in expr.uns else []
+        )
+        if UNS_NTC_GUIDES in expr.uns:
+            self._ntc_ids = {str(g) for g in expr.uns[UNS_NTC_GUIDES]}
+        else:
+            self._ntc_ids = {g for g, f in zip(self._guide_ids, is_non_targeting(self._guide_ids, cfg.guides)) if f}
         self._guide_cache = None
-        self._pseudo: Dict[str, np.ndarray] = {}
-        if gkey in expr.obsm and UNS_GUIDES in expr.uns:
-            guide_ids = [str(g) for g in expr.uns[UNS_GUIDES]]
-            if UNS_NTC_GUIDES in expr.uns:
-                ntc_ids = {str(g) for g in expr.uns[UNS_NTC_GUIDES]}
+        self._pseudo: Optional[Dict[str, np.ndarray]] = None
+
+    def _guide_matrix(self, expr=None, cfg=None):
+        """Cached (CSC guide membership, guide ids, target -> guide columns); built once per index."""
+        if self._guide_cache is None:
+            if self._guide_src is None or not self._guide_ids:
+                self._guide_cache = (None, [], {})
             else:
-                ntc_ids = {g for g, f in zip(guide_ids, is_non_targeting(guide_ids, cfg.guides)) if f}
-            G = sparse.csc_matrix(expr.obsm[gkey])
-            for j, g in enumerate(guide_ids):
-                if g in ntc_ids:
-                    idx = G.indices[G.indptr[j] : G.indptr[j + 1]].astype(np.int64)
-                    if idx.size:
-                        self._pseudo[PSEUDO_PREFIX + g] = np.sort(idx)
+                by_target: Dict[str, List[int]] = {}
+                for j, t in enumerate(self._guide_targets):
+                    by_target.setdefault(t, []).append(j)
+                self._guide_cache = (sparse.csc_matrix(self._guide_src), list(self._guide_ids), by_target)
+                self._guide_src = None  # the CSR source is no longer needed
+        return self._guide_cache
+
+    def _ensure_pseudo(self) -> Dict[str, np.ndarray]:
+        """NTC guides -> member cell indices (any class), from the shared guide-matrix cache."""
+        if self._pseudo is None:
+            self._pseudo = {}
+            G, guide_ids, _ = self._guide_matrix()
+            if G is not None:
+                for j, g in enumerate(guide_ids):
+                    if g in self._ntc_ids:
+                        idx = G.indices[G.indptr[j] : G.indptr[j + 1]].astype(np.int64)
+                        if idx.size:
+                            self._pseudo[PSEUDO_PREFIX + g] = np.sort(idx)
+        return self._pseudo
 
     # -- real targets
     def has(self, target: str) -> bool:
-        return target in self._pos or target in self._pseudo
+        return target in self._pos or target in self._ensure_pseudo()
 
     def indices(self, target: str) -> np.ndarray:
         """Sorted cell indices carrying ``target`` (or a pseudo-target)."""
-        if target in self._pseudo:
-            return self._pseudo[target]
+        if self.is_pseudo(target):
+            return self._ensure_pseudo().get(target, np.empty(0, dtype=np.int64))
         j = self._pos.get(target)
         if j is None:
             return np.empty(0, dtype=np.int64)
@@ -543,10 +567,10 @@ class MembershipIndex:
     # -- pseudo-targets
     @property
     def pseudo_targets(self) -> List[str]:
-        return sorted(self._pseudo)
+        return sorted(self._ensure_pseudo())
 
     def pseudo_counts(self) -> pd.Series:
-        return pd.Series({k: int(v.size) for k, v in self._pseudo.items()}, dtype=int)
+        return pd.Series({k: int(v.size) for k, v in self._ensure_pseudo().items()}, dtype=int)
 
     @staticmethod
     def is_pseudo(target: str) -> bool:
@@ -577,32 +601,21 @@ class MembershipIndex:
         """pseudo-targets x categories counts (same convention as :meth:`counts_by`)."""
         values = np.asarray(values).astype(str)
         rows = []
+        pseudo = self._ensure_pseudo()
         for name in self.pseudo_targets:
-            idx = self._pseudo[name]
+            idx = pseudo[name]
             if cell_mask is not None:
                 idx = idx[np.asarray(cell_mask, dtype=bool)[idx]]
             vc = pd.Series(values[idx]).value_counts()
             rows.append([int(vc.get(c, 0)) for c in categories])
         return pd.DataFrame(rows, index=self.pseudo_targets, columns=list(categories), dtype=np.int64)
 
-    def _guide_matrix(self, expr: ad.AnnData, cfg: Config):
-        """Cached CSC guide membership matrix plus guide ids / targets (built once per index)."""
-        if getattr(self, "_guide_cache", None) is None:
-            gkey = cfg.guides.high_moi.guide_membership_obsm_key
-            if gkey not in expr.obsm or UNS_GUIDES not in expr.uns or UNS_GUIDE_TARGETS not in expr.uns:
-                self._guide_cache = (None, [], {})
-            else:
-                guide_ids = [str(g) for g in expr.uns[UNS_GUIDES]]
-                guide_targets = [str(t) for t in expr.uns[UNS_GUIDE_TARGETS]]
-                by_target: Dict[str, List[int]] = {}
-                for j, t in enumerate(guide_targets):
-                    by_target.setdefault(t, []).append(j)
-                self._guide_cache = (sparse.csc_matrix(expr.obsm[gkey]), guide_ids, by_target)
-        return self._guide_cache
-
     def guide_members(self, expr: ad.AnnData, cfg: Config, target: str) -> Dict[str, np.ndarray]:
-        """{guide_id: member cell indices} for the guides of ``target`` (guide concordance)."""
-        G, guide_ids, by_target = self._guide_matrix(expr, cfg)
+        """{guide_id: member cell indices} for the guides of ``target`` (guide concordance).
+
+        ``expr`` / ``cfg`` are accepted for API stability; the data come from the index's own cache.
+        """
+        G, guide_ids, by_target = self._guide_matrix()
         if G is None:
             return {}
         return {

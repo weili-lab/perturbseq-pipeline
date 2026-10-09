@@ -892,12 +892,19 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
         status.start("distance")
         logger.info("=== Stage 10/14: perturbation distance vs control ===")
         distance_results = dist_mod.compute_perturbation_distance(expr, cfg)
-        if distance_results is not None and not distance_results.table.empty:
-            _write_table("perturbation_distance", distance_results.table, tabledir, table_paths)
-            tables["perturbation_distance"] = distance_results.table
-            if distance_results.membership_aware and not distance_results.pseudo_table.empty:
-                _write_table("perturbation_distance_pseudo_targets", distance_results.pseudo_table, tabledir, table_paths)
-                tables["perturbation_distance_pseudo_targets"] = distance_results.pseudo_table
+        has_pseudo = (
+            distance_results is not None
+            and distance_results.membership_aware
+            and not distance_results.pseudo_table.empty
+        )
+        if has_pseudo:
+            # written independently of the real table: a run can have eligible NTC pseudo-targets only
+            _write_table("perturbation_distance_pseudo_targets", distance_results.pseudo_table, tabledir, table_paths)
+            tables["perturbation_distance_pseudo_targets"] = distance_results.pseudo_table
+        if distance_results is not None and (not distance_results.table.empty or has_pseudo):
+            if not distance_results.table.empty:
+                _write_table("perturbation_distance", distance_results.table, tabledir, table_paths)
+                tables["perturbation_distance"] = distance_results.table
             if not distance_results.skipped.empty:
                 _write_table("distance_skipped", distance_results.skipped, tabledir, table_paths)
                 _table_for_report(

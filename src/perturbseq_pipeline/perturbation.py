@@ -107,6 +107,12 @@ class PerturbationResults:
     #: Targets that could not be tested.
     skipped: pd.DataFrame
     n_control_cells: Dict[str, int]
+    #: High-MOI mode: sets come from the membership matrix (use CONTROL_LABELS_MEMBERSHIP).
+    membership_aware: bool = False
+
+    @property
+    def control_labels(self) -> Dict[str, str]:
+        return CONTROL_LABELS_MEMBERSHIP if self.membership_aware else CONTROL_LABELS
 
     @property
     def hits(self) -> pd.DataFrame:
@@ -578,6 +584,7 @@ def _finalize_results(
             primary_control=primary,
             skipped=pd.DataFrame(skipped),
             n_control_cells=n_control_cells,
+            membership_aware=membership_aware,
         )
     table = pd.DataFrame(rows)
     for control in controls_used:
@@ -613,6 +620,7 @@ def _finalize_results(
         primary_control=primary,
         skipped=pd.DataFrame(skipped),
         n_control_cells=n_control_cells,
+        membership_aware=membership_aware,
     )
 
 

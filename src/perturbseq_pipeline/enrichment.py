@@ -380,7 +380,8 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
             if n < ecfg.min_cells_per_target
         ]
     )
-    if not testable:
+    pseudo_targets = _pseudo_target_list(membership, cfg)
+    if not testable and not pseudo_targets:
         logger.warning("No target has enough cells for the enrichment test.")
         return EnrichmentResults(
             table=pd.DataFrame(),
@@ -393,7 +394,8 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
             cluster_key=cluster_key,
             membership_aware=membership is not None,
         )
-    pseudo_targets = _pseudo_target_list(membership, cfg)
+    if not testable:
+        logger.warning("No real target has enough cells for the enrichment test; testing the NTC pseudo-targets only.")
     # Composition
     in_cluster = {cluster: (clusters_all == cluster) for cluster in clusters}
     comp_rows = {}
@@ -401,7 +403,9 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
         mask = _pert(gene)
         n = int(mask.sum())
         comp_rows[gene] = {cluster: (100 * float((mask & in_cluster[cluster]).sum()) / n) for cluster in clusters}
-    composition = pd.DataFrame.from_dict(comp_rows, orient="index")[clusters]
+    composition = (
+        pd.DataFrame.from_dict(comp_rows, orient="index")[clusters] if testable else pd.DataFrame(columns=clusters)
+    )
     # Reference compositions
     reference_composition = {}
     for control in controls_used:
@@ -418,7 +422,7 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
         {cluster: [int((_pert(gene) & in_cluster[cluster]).sum()) for gene in testable] for cluster in clusters},
         index=testable,
     )
-    omnibus = omnibus_test(contingency, ecfg.permutations, cfg.run.seed)
+    omnibus = omnibus_test(contingency, ecfg.permutations, cfg.run.seed) if testable else {}
     if omnibus:
         logger.info(
             "Omnibus association: chi2=%.0f (dof %d), permutation p=%.4g (%.0f%% of expected counts < 5)",
@@ -571,7 +575,8 @@ def _test_cluster_enrichment_membership_large(expr: ad.AnnData, cfg: Config, mem
             if n < ecfg.min_cells_per_target
         ]
     )
-    if not testable:
+    pseudo_targets = _pseudo_target_list(membership, cfg)
+    if not testable and not pseudo_targets:
         return EnrichmentResults(
             table=pd.DataFrame(),
             composition=pd.DataFrame(),
@@ -581,6 +586,8 @@ def _test_cluster_enrichment_membership_large(expr: ad.AnnData, cfg: Config, mem
             cluster_key=cluster_key,
             membership_aware=True,
         )
+    if not testable:
+        logger.warning("No real target has enough cells for the enrichment test; testing the NTC pseudo-targets only.")
     controls_used = []
     for control in ecfg.controls:
         n_ref = total_ntc if control == CONTROL_NTC else total_targeting
@@ -604,7 +611,6 @@ def _test_cluster_enrichment_membership_large(expr: ad.AnnData, cfg: Config, mem
         if len(strata) >= 2:
             stratified = True
             logger.info("Large-data CMH stratification by %r (%d strata)", ecfg.stratify_by, len(strata))
-    pseudo_targets = _pseudo_target_list(membership, cfg)
     # Aggregated counts (all clusters, so row totals are whole-cell counts; kept clusters selected for the tests)
     tc_full = membership.counts_by(clusters_all, ordered_clusters)
     pc_full = membership.pseudo_counts_by(clusters_all, ordered_clusters)
@@ -614,14 +620,18 @@ def _test_cluster_enrichment_membership_large(expr: ad.AnnData, cfg: Config, mem
     targeting_cluster_totals = pd.Series(clusters_all[targeting_mask]).value_counts().reindex(ordered_clusters, fill_value=0)
     ntc_cluster_counts = pd.Series(clusters_all[ntc_mask]).value_counts().reindex(ordered_clusters, fill_value=0)
     # Composition (per cent of each target's cells in each kept cluster)
-    composition = (tc_full.loc[testable, clusters].T / np.maximum(target_counts[testable].to_numpy(), 1) * 100.0).T
+    composition = (
+        (tc_full.loc[testable, clusters].T / np.maximum(target_counts[testable].to_numpy(), 1) * 100.0).T
+        if testable
+        else pd.DataFrame(columns=clusters)
+    )
     reference_composition: Dict[str, pd.Series] = {}
     if CONTROL_NTC in controls_used:
         reference_composition[CONTROL_NTC] = ntc_cluster_counts[clusters] / max(total_ntc, 1) * 100.0
     if CONTROL_OTHER in controls_used:
         reference_composition[CONTROL_OTHER] = targeting_cluster_totals[clusters] / max(total_targeting, 1) * 100.0
     effective_permutations = min(int(ecfg.permutations), LARGE_DATASET_MAX_OMNIBUS_PERMUTATIONS)
-    omnibus = omnibus_test(tc_full.loc[testable, clusters], effective_permutations, cfg.run.seed)
+    omnibus = omnibus_test(tc_full.loc[testable, clusters], effective_permutations, cfg.run.seed) if testable else {}
     if omnibus:
         logger.info(
             "Omnibus association: chi2=%.0f (dof %d), permutation p=%.4g (%.0f%% of expected counts < 5)",
@@ -1095,28 +1105,15 @@ def _finalize_enrichment_results(
     ecfg = cfg.enrichment
     obs = expr.obs
     membership_aware = membership is not None
-    if table.empty:
-        return EnrichmentResults(
-            table=table,
-            composition=composition,
-            reference_composition=reference_composition,
-            effect_magnitude=pd.DataFrame(),
-            omnibus=omnibus,
-            controls_used=controls_used,
-            primary_control=primary,
-            skipped=skipped,
-            cluster_key=cluster_key,
-            stratified=stratified,
-            stratify_by=(ecfg.stratify_by if stratified else None),
-            membership_aware=membership_aware,
-        )
-    # FDR
-    table["fdr"] = np.nan
-    for control in controls_used:
-        mask = table["control"] == control
-        table.loc[mask, "fdr"] = benjamini_hochberg(table.loc[mask, "pval"].to_numpy())
-    table["significant"] = (table["fdr"] < ecfg.fdr_alpha) & (table["control"] == primary)
-    # Pseudo-targets (high-MOI): same tests, own BH family, empirical false-positive rate
+    # FDR (real targets)
+    if not table.empty:
+        table["fdr"] = np.nan
+        for control in controls_used:
+            mask = table["control"] == control
+            table.loc[mask, "fdr"] = benjamini_hochberg(table.loc[mask, "pval"].to_numpy())
+        table["significant"] = (table["fdr"] < ecfg.fdr_alpha) & (table["control"] == primary)
+    # Pseudo-targets (high-MOI): same tests, own BH family, empirical false-positive rate. Processed before the
+    # empty-real-table return so a pseudo-only run keeps its negative-control results.
     pseudo_summary: Dict[str, float] = {}
     if pseudo_table is None:
         pseudo_table = pd.DataFrame()
@@ -1128,7 +1125,7 @@ def _finalize_enrichment_results(
             pseudo_table.loc[mask, "fdr"] = benjamini_hochberg(pseudo_table.loc[mask, "pval"].to_numpy())
         pseudo_table["significant"] = (pseudo_table["fdr"] < ecfg.fdr_alpha) & (pseudo_table["control"] == primary)
         pp = pseudo_table[pseudo_table["control"] == primary]
-        rp = table[table["control"] == primary]
+        rp = table[table["control"] == primary] if not table.empty else pd.DataFrame(columns=["significant"])
         pseudo_summary = {
             "n_pseudo_targets": int(pp["target_gene"].nunique()),
             "n_pseudo_tests": int(len(pp)),
@@ -1145,11 +1142,28 @@ def _finalize_enrichment_results(
             "Enrichment negative controls: %d NTC pseudo-target(s) x %d cluster(s) -> %d significant of %d tests (%.2f%%; "
             "real targets: %.2f%%)",
             pseudo_summary["n_pseudo_targets"],
-            composition.shape[1],
+            int(pp["cluster"].nunique()),
             pseudo_summary["n_pseudo_significant"],
             pseudo_summary["n_pseudo_tests"],
             pseudo_summary["pseudo_fpr_pct"],
             pseudo_summary["real_hit_rate_pct"],
+        )
+    if table.empty:
+        return EnrichmentResults(
+            table=table,
+            composition=composition,
+            reference_composition=reference_composition,
+            effect_magnitude=pd.DataFrame(),
+            omnibus=omnibus,
+            controls_used=controls_used,
+            primary_control=primary,
+            skipped=skipped,
+            cluster_key=cluster_key,
+            stratified=stratified,
+            stratify_by=(ecfg.stratify_by if stratified else None),
+            membership_aware=membership_aware,
+            pseudo_table=pseudo_table,
+            pseudo_summary=pseudo_summary,
         )
     # Guide concordance only for significant pairs
     table["guides_concordant"] = np.nan
