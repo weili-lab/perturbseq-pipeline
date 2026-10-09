@@ -95,6 +95,24 @@ def _single_guide_perturbation_methods(cfg) -> str:
     )
 
 
+def _high_moi_per_cell_text(tables: dict, cfg) -> str:
+    """Describe the per-cell membership outputs that this run actually produced."""
+    parts = []
+    if "ps_score" in tables and not getattr(tables["ps_score"], "empty", True):
+        parts.append("PS scores (`obsm['ps_score_membership']`; `obs['ps_score']` = primary target)")
+    if "lochness" in tables and not getattr(tables["lochness"], "empty", True):
+        parts.append("lochNESS (`obsm['lochness_membership']`; `obs['lochness_self']` = primary target)")
+    if "knockdown_filter" in tables and not getattr(tables["knockdown_filter"], "empty", True):
+        parts.append("knockdown filter (`obsm['kd_status_membership']`; `obs['kd_status']` = primary target)")
+    if not parts:
+        return "No per-cell stage (PS, lochNESS, knockdown filter) produced output in this run. "
+    return (
+        "Per-cell outputs on membership, stored for every (cell, carried target) pair whose target passed the stage's "
+        "thresholds and was successfully scored: " + "; ".join(parts) + ". `obs` columns hold each cell's value for its "
+        "primary (highest-UMI) target. "
+    )
+
+
 def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
     cfg, reg, tables = inputs.cfg, inputs.registry, inputs.tables
     run_dir = Path(cfg.run.outdir)
@@ -181,13 +199,15 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "",
             f"Membership rule (`guides.high_moi.method: {hm.method}`): a guide is called in a cell when it has >= {hm.min_umi} UMIs"
             + (f" and >= {hm.min_frac_of_top:g} x the cell's top guide" if hm.method == "threshold" else " and lies above the largest log-UMI drop of the cell")
-            + f"; cells with more than {hm.max_guides_per_cell} called guides are classed ambiguous. Non-targeting guides collapse into one `{cfg.guides.ntc_label}` membership column.",
+            + f"; cells with more than {hm.max_guides_per_cell} called guides are classed ambiguous. Non-targeting guides collapse into one `{cfg.guides.ntc_label}` membership column. "
+            "`obs['target_gene']` is each cell's primary (highest-UMI) target.",
             "",
             "**Membership-aware statistics:** perturbation strength, cluster enrichment, co-functional modules and perturbation "
             "distance take perturbed = cells carrying the target and `other` = targeting cells not carrying it; every "
             "non-targeting guide is also tested as a negative-control pseudo-target (`NTC:<guide>`), giving the empirical "
-            "false-positive rate below. Per-cell scores (PS, lochNESS) and the knockdown filter still use each cell's primary "
-            f"(highest-UMI) target. The full membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
+            "false-positive rate below. "
+            + _high_moi_per_cell_text(tables, cfg)
+            + f"The full membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
             "",
             T("high_moi_calling"),
             "Rank-ordered guide UMI profile (median and p10-p90 of the k-th ranked guide per cell):",

@@ -513,6 +513,7 @@ output:
 | `obsm['perturbation_membership']`, `obsm['guide_membership']`, `uns['membership_targets']` | high-MOI mode: cells x targets and cells x guides membership (sparse, 0/1) and the target column names |
 | `obs['n_guides_assigned']`, `n_targets_assigned`, `n_guides_called`, `is_ntc_only` | high-MOI mode: membership counts per cell (`n_guides_called` = before the per-cell cap) |
 | `tables/enrichment_pseudo_targets.csv`, `enrichment_pseudo_summary.csv` | high-MOI mode: non-targeting guides tested as negative-control pseudo-targets and the empirical false-positive rate |
+| `obsm['ps_score_membership']`, `obsm['lochness_membership']` | high-MOI mode: per-(cell, carried target) PS and lochNESS scores (sparse); `obs['ps_score']` / `lochness_self` = the primary target's value |
 | `obs['total_guide_counts']`, `n_guides_detected` | guide depth and MOI |
 | `obs['leiden']`, `obsm['X_umap']` | clustering and embedding |
 | `obs['ps_score']`, `lochness_self`, `obsm['X_lda_umap']` | per-cell scores from the optional stages |

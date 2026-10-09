@@ -1852,7 +1852,7 @@ def plot_lochness(expr, results, reg: FigureRegistry, cfg: Config) -> None:
         if gene not in results.scores:
             continue
         score = np.asarray(results.scores[gene], dtype=float)
-        own = expr.obs[cfg.lochness.genotype_key].astype(str).to_numpy() == gene
+        own = expr.obs[OBS_TARGET if cfg.guides.assignment_mode == "high_moi" else cfg.lochness.genotype_key].astype(str).to_numpy() == gene
         row = summary[summary["target_gene"] == gene].iloc[0]
         fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.8))
         # Score map.
