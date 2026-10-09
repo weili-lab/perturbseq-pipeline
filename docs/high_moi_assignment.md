@@ -92,17 +92,24 @@ has no pseudo-targets (an NTC guide has no own gene to test).
 perturbed = cells carrying the target, reference = NTC-only cells) and lochNESS
 (indicator = cells carrying the target, overall fraction = members / cells,
 computed for chunks of targets with one sparse product each) are computed for
-every (cell, carried target) pair and stored sparsely in
-`obsm['ps_score_membership']` / `obsm['lochness_membership']` (column names in
-`uns['ps_score_membership_targets']` / `uns['lochness_membership_targets']`).
+every (cell, carried target) pair **whose target is eligible for the stage** and
+stored sparsely in `obsm['ps_score_membership']` / `obsm['lochness_membership']`
+(column names in `uns['ps_score_membership_targets']` /
+`uns['lochness_membership_targets']`). Eligibility follows the stage thresholds:
+lochNESS needs `lochness.min_cells_per_target` member cells; PS needs
+`ps_score.min_cells_per_target`, a measured and expressed target gene and a
+successful PS_python fit. A membership column without a score column therefore
+means the target was skipped by that stage (see the stage's skipped table), not
+that the cell does not carry it. The matrices exist only when the stage is
+enabled.
 `obs['ps_score']`, `obs['ps_quadrant']` and `obs['lochness_self']` keep one
 value per cell: the score for the cell's primary (highest-UMI) target. The
 PS_python LDA/UMAP embedding is not computed in this mode (it needs one label
 per cell).
 
-**Knockdown filter on membership.** Each target's member cells go through the
-unchanged per-(target, context) machinery; the per-cell results are stored for
-every (cell, carried target) pair in `obsm['kd_ratio_membership']` and
+**Knockdown filter on membership** (when enabled). Each target's member cells go
+through the unchanged per-(target, context) machinery; the per-cell results are
+stored for every (cell, carried target) pair in `obsm['kd_ratio_membership']` and
 `obsm['kd_status_membership']` (status codes in `uns['kd_status_codes']`,
 columns in `uns['kd_membership_targets']`), and `obs['kd_status']` /
 `kd_ratio` / `kd_keep` keep the primary target's values.

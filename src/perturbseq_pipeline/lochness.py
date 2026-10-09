@@ -62,7 +62,7 @@ from scipy import sparse
 from .cluster import CLUSTER_KEY
 from .compute import log_compute_decision, resolve_stage_backend
 from .config import Config
-from .guides import CLASS_NTC, CLASS_TARGETING, OBS_CLASS
+from .guides import OBS_TARGET, CLASS_NTC, CLASS_TARGETING, OBS_CLASS
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +408,10 @@ def compute_lochness(expr: ad.AnnData, cfg: Config) -> Optional[LochnessResults]
     )
     membership = membership_index(expr, cfg)
     if membership is not None:
+        # membership columns are target genes: the primary label must be obs['target_gene'], whatever genotype_key says
+        if key != OBS_TARGET:
+            logger.info("lochNESS membership mode: using obs[%r] for primary labels (genotype_key=%r ignored)", OBS_TARGET, key)
+        labels = expr.obs[OBS_TARGET].astype(str).to_numpy()
         target_counts = membership.counts
     else:
         target_counts = pd.Series(labels[klass == CLASS_TARGETING]).value_counts()

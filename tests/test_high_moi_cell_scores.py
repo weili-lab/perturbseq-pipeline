@@ -108,19 +108,31 @@ def test_high_moi_cell_scores_end_to_end(tmp_path):
     assert row.nnz == obs[OBS_N_TARGETS].iloc[i]
     j = list(ad_out.uns["lochness_membership_targets"]).index(str(obs[OBS_TARGET].iloc[i]))
     assert np.isclose(row[0, j], obs["lochness_self"].iloc[i], rtol=1e-5)
-    if "ps_score_membership" in ad_out.obsm:
-        P = ad_out.obsm["ps_score_membership"].tocsr()
-        assert P.shape[0] == ad_out.n_obs and P.nnz > 0
-        k = list(ad_out.uns["ps_score_membership_targets"]).index(str(obs[OBS_TARGET].iloc[i]))
-        if P[i, k] != 0:
-            assert np.isclose(P[i, k], obs["ps_score"].iloc[i], rtol=1e-5)
+    # PS is enabled: the membership matrix must exist, and a scored multi-target cell's primary entry must equal obs
+    assert "ps_score_membership" in ad_out.obsm
+    P = ad_out.obsm["ps_score_membership"].tocsc()
+    ps_targets = list(ad_out.uns["ps_score_membership_targets"])
+    assert P.shape[0] == ad_out.n_obs and P.nnz > 0 and len(ps_targets) >= 3
+    prim = obs[OBS_TARGET].astype(str).to_numpy()
+    scored_cells = np.flatnonzero(multi & np.isin(prim, ps_targets))
+    assert scored_cells.size > 0
+    i2 = int(scored_cells[0])
+    k = ps_targets.index(prim[i2])
+    col = P[:, k]
+    assert i2 in col.indices  # an explicit entry exists even if its value is exactly zero
+    assert np.isclose(col[i2, 0], obs["ps_score"].iloc[i2], rtol=1e-5, atol=1e-6)
+    # cells not carrying the target have no entry
+    non_member = int(np.flatnonzero(~ad_out.obsm[cfg.guides.high_moi.membership_obsm_key].toarray()[:, list(ad_out.uns["membership_targets"]).index(prim[i2])].astype(bool))[0])
+    assert non_member not in col.indices
     outdir = Path(cfg.run.outdir)
     loch = pd.read_csv(outdir / "tables" / "lochness.csv")
     assert set(loch["target_gene"]) == set(KD_TARGETS + NULL_TARGETS)
     ps = pd.read_csv(outdir / "tables" / "ps_score.csv")
     assert len(ps) >= 3 and (ps["n_perturbed_cells"] > 150).all()
     report = (outdir / "report.md").read_text()
-    assert "ps_score_membership" in report and "kd_status_membership" in report
+    # the report names only the per-cell outputs this run produced (knockdown filter is disabled here)
+    assert "ps_score_membership" in report and "lochness_membership" in report
+    assert "kd_status_membership" not in report
 
 
 def test_knockdown_filter_matches_single_guide_on_one_target_cells(paired_objects):
@@ -150,3 +162,60 @@ def test_knockdown_filter_matches_single_guide_on_one_target_cells(paired_object
     inv = {v: k for k, v in codes.items()}
     i = int(np.flatnonzero(targeting)[0])
     assert inv[int(S[i].data[0])] == str(b.obs["kd_status"].iloc[i])
+
+
+@pytest.mark.parametrize("method", ["mean_ratio", "count_model"])
+def test_knockdown_filter_overlapping_memberships(tmp_path, method):
+    """Multi-target cells get an independent status/ratio for every carried target; obs keeps the primary one."""
+    from perturbseq_pipeline import cluster as cluster_mod
+    from perturbseq_pipeline import io as io_mod
+    from perturbseq_pipeline import knockdown_filter as kd_mod
+    from perturbseq_pipeline import qc as qc_mod
+    from perturbseq_pipeline.guides import assign_guides
+
+    data = make_dataset(tmp_path / "synthetic", n_lanes=2, n_cells=300, moi=4)
+    cfg = _base_cfg(data, tmp_path / "run", assignment_mode="high_moi", high_moi={"min_umi": 5})
+    cfg.knockdown_filter.enabled = True
+    cfg.knockdown_filter.method = method
+    cfg.knockdown_filter.min_cells = 5
+    cfg.knockdown_filter.min_control_cells = 5
+    cfg.validate()
+    loaded = io_mod.load_data(cfg)
+    expr = qc_mod.prefilter(loaded.expr, cfg)
+    expr = qc_mod.compute_qc_metrics(expr, cfg)
+    expr, _ = qc_mod.filter_cells_and_genes(expr, cfg)
+    expr = assign_guides(expr, loaded.guides, cfg)
+    expr = cluster_mod.normalize(expr, cfg)  # the pipeline runs the filter after normalisation, before embedding
+    out, table = kd_mod.compute_knockdown_mask(expr, cfg)
+    obs = out.obs
+    kd_targets = list(out.uns["kd_membership_targets"])
+    S = out.obsm["kd_status_membership"].tocsr()
+    R = out.obsm["kd_ratio_membership"].tocsr()
+    T = out.obsm[cfg.guides.high_moi.membership_obsm_key].toarray().astype(bool)
+    tcols = [list(out.uns["membership_targets"]).index(t) for t in kd_targets]
+    inv = {v: k for k, v in out.uns["kd_status_codes"].items()}
+    multi = np.flatnonzero((obs[OBS_N_TARGETS] >= 2).to_numpy())
+    assert multi.size > 100
+    checked = 0
+    for i in multi[:50]:
+        carried = {kd_targets[j] for j in np.flatnonzero(T[i, tcols])}
+        entries = {kd_targets[j] for j in S[i].indices}
+        assert entries == carried, (i, carried, entries)  # one status per carried target, none for others
+        prim = str(obs[OBS_TARGET].iloc[i])
+        j = kd_targets.index(prim)
+        assert inv[int(S[i, j])] == str(obs["kd_status"].iloc[i])
+        np.testing.assert_allclose(R[i, j], obs["kd_ratio"].iloc[i], rtol=1e-6, equal_nan=True)
+        if len(carried) >= 2:
+            checked += 1
+    assert checked > 20
+    # the per-target state is isolated: the ratios of two targets of one cell are the cell's own expression ratios,
+    # i.e. KD targets show low ratios and NULL targets ratios near 1 for the SAME cells
+    kd_cols = [kd_targets.index(t) for t in KD_TARGETS if t in kd_targets]
+    null_cols = [kd_targets.index(t) for t in NULL_TARGETS if t in kd_targets]
+    Rd = R.toarray()
+    kd_vals = np.concatenate([Rd[T[:, tcols[c]], c] for c in kd_cols])
+    null_vals = np.concatenate([Rd[T[:, tcols[c]], c] for c in null_cols])
+    assert np.nanmedian(kd_vals) < 0.5 < np.nanmedian(null_vals)
+    assert set(table["target_gene"]) >= set(KD_TARGETS + NULL_TARGETS)
+    if method == "count_model":
+        assert "kd_escaper_prob" in obs.columns

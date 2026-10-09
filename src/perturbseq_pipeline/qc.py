@@ -554,14 +554,27 @@ def _check_guide_qc_high_moi(expr: ad.AnnData, cfg: Config) -> List[str]:
             f"{hcfg.max_guides_per_cell} called guides and are classed ambiguous (doublet-like). "
             "Check the rank-ordered guide UMI profile; raise the cap only if the knee supports it."
         )
+    per_cell = []
+    if cfg.ps_score.enabled:
+        per_cell.append("PS scores (obsm['ps_score_membership'], obs['ps_score'] = primary target)")
+    if cfg.lochness.enabled:
+        per_cell.append("lochNESS (obsm['lochness_membership'], obs['lochness_self'] = primary target)")
+    if cfg.knockdown_filter.enabled:
+        per_cell.append("knockdown filter (obsm['kd_status_membership'], obs['kd_status'] = primary target)")
+    per_cell_text = (
+        " Per-cell outputs on membership, for every (cell, carried target) pair whose target passes the stage thresholds: "
+        + "; ".join(per_cell)
+        + ". obs columns hold each cell's value for its PRIMARY (highest-UMI) target."
+        if per_cell
+        else " Per-cell stages (PS, lochNESS, knockdown filter) are disabled in this run; obs['target_gene'] is each "
+        "cell's PRIMARY (highest-UMI) target."
+    )
     warnings.append(
         "High-MOI mode: perturbation strength, cluster enrichment, co-functional modules and perturbation distance use "
         "the membership matrix (perturbed = cells carrying the target; 'other' = targeting cells not carrying it; "
-        "non-targeting guides are tested as negative-control pseudo-targets). Per-cell PS and lochNESS scores are computed "
-        "for every (cell, carried target) pair (obsm['ps_score_membership'], obsm['lochness_membership']); obs['ps_score'] "
-        "and obs['lochness_self'] hold each cell's score for its PRIMARY (highest-UMI) target; the knockdown filter likewise "
-        "evaluates every (cell, carried target) pair (obsm['kd_status_membership']) and keeps the primary target's status in "
-        f"obs. Membership: obsm['{hcfg.membership_obsm_key}'], targets in uns['membership_targets']."
+        "non-targeting guides are tested as negative-control pseudo-targets)."
+        + per_cell_text
+        + f" Membership: obsm['{hcfg.membership_obsm_key}'], targets in uns['membership_targets']."
     )
     return warnings
 
