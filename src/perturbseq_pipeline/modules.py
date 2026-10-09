@@ -867,7 +867,11 @@ def compute_modules(expr: ad.AnnData, cfg: Config, regression=None) -> Optional[
         control = "regression"
     else:
         effect, control, de_mask = build_effect_matrix(expr, genes, targets, cfg)
-    n_cells = expr.obs[OBS_TARGET].astype(str).value_counts()
+    from .high_moi import membership_index
+
+    membership = membership_index(expr, cfg)
+    # cells carrying each target (membership) in high-MOI mode, as used for the selection; primary label otherwise
+    n_cells = membership.counts if membership is not None else expr.obs[OBS_TARGET].astype(str).value_counts()
     logger.info(
         "modules: effect matrix %d perturbations x %d genes "
         "(log2FC vs %s); median %d significant DE genes/perturbation",

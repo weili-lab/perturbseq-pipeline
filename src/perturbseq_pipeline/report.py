@@ -77,6 +77,15 @@ class ReportInputs:
     provenance_rows: List[tuple] = field(default_factory=list)
 
 
+def regression_stratum(tables: Dict[str, pd.DataFrame]) -> Optional[str]:
+    """obs column the regression permutations were stratified by, from its design table (None = unstratified)."""
+    design = tables.get("regression_design")
+    if design is None or design.empty:
+        return None
+    value = dict(zip(design["metric"].astype(str), design["value"].astype(str))).get("batch_key", "none")
+    return None if value == "none" else value
+
+
 def _df_to_html(df: Optional[pd.DataFrame], max_rows: int = 200) -> str:
     """Render a DataFrame as an HTML table, or a placeholder when empty."""
     if df is None or len(df) == 0:
@@ -387,6 +396,7 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         metadata_source=inputs.metadata_source or "none (single lane)",
         guide_source_text=inputs.guide_source_text,
         tables=tables_html,
+        regression_stratum=regression_stratum(inputs.tables),
         figures=figures,
         render_figure=lambda f: _render_figure(f, embed),
         controls_described=controls_described,

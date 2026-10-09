@@ -21,7 +21,7 @@ from typing import Iterable, List, Optional
 import pandas as pd
 
 from .plots import SECTION_CLUSTERING, SECTION_GUIDES, SECTION_PERTURBATION, SECTION_QC, FigureRegistry
-from .report import ReportInputs, _versions
+from .report import ReportInputs, _versions, regression_stratum
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +393,13 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
     # ---- optional stages: only the ones that produced a table in this run -------------------------
     if "regression_design" in tables:
         r = cfg.regression
+        stratum = regression_stratum(tables)
+        if stratum:
+            perm_scope = f" within `{stratum}`"
+        elif r.batch_key:
+            perm_scope = f", unstratified: `{r.batch_key}` is not in obs"
+        else:
+            perm_scope = ", unstratified"
         L += [
             H("Membership regression (high-MOI)"),
             "",
@@ -400,10 +407,10 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "`lognorm ~ membership (all targets)"
             + (" + n_guides" if r.n_guides_covariate else "")
             + (" + log(total_counts)" if r.depth_covariate else "")
-            + (f" + {r.batch_key}" if r.batch_key else "")
+            + (f" + {stratum}" if stratum else "")
             + f"`, ridge penalty {r.ridge_alpha:g} on the membership coefficients. Unlike the pseudobulk contrasts, "
             "each effect is adjusted for the targets co-carried in the same cells. "
-            f"Permutations ({r.n_permutations}; membership rows shuffled across cells{f' within `{r.batch_key}`' if r.batch_key else ''}) "
+            f"Permutations ({r.n_permutations}; membership rows shuffled across cells{perm_scope}) "
             "calibrate each target's t statistic (genomic control: divided by sqrt(lambda), lambda = permuted median t² / its "
             "expected value, at least 1) before the t-test p-value; "
             + ("BH across all (target, gene) pairs; " if r.fdr_scope == "global" else "BH across genes within each target; ")

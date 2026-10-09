@@ -161,16 +161,26 @@ class _Design:
         self.se_fac = np.maximum(se_fac, 0.0)
         self.p = X.shape[1]
         self.m = m
+        # Effective residual df n - tr(H), with tr(H) = tr(A^-1 XᵀX) = p - α tr(A^-1 on the penalised block):
+        # a ridge-penalised column uses less than one df (equal to p - α·0 = p when α = 0).
+        n = X.shape[0]
+        self.df_model = float(self.p - alpha * np.trace(Ainv[:m, :m]))
+        self.resid_df = float(n - self.df_model)
+        if self.resid_df < 1.0:
+            raise ValueError(
+                f"regression: the design has {self.df_model:.1f} effective parameters for {n} fitted cells "
+                "(residual df < 1); increase regression.ridge_alpha or fit more cells"
+            )
 
 
-def _fit_chunk(design: _Design, Y: sparse.csr_matrix, yty: np.ndarray, alpha: float, n: int, n_report: int):
+def _fit_chunk(design: _Design, Y: sparse.csr_matrix, yty: np.ndarray, alpha: float, n_report: int):
     """coef and t (n_report x genes) for one gene chunk."""
     B = design.Xt @ Y
     B = B.toarray() if sparse.issparse(B) else np.asarray(B)
     beta = linalg.cho_solve(design.factor, B, check_finite=False)
     # RSS = yᵀy - βᵀXᵀy - α‖β_M‖²  (from (XᵀX + Λ)β = Xᵀy)
     rss = yty - np.einsum("ij,ij->j", beta, B) - alpha * np.einsum("ij,ij->j", beta[: design.m], beta[: design.m])
-    s2 = np.maximum(rss, 0.0) / max(n - design.p, 1)
+    s2 = np.maximum(rss, 0.0) / design.resid_df
     coef = beta[:n_report]
     se = np.sqrt(np.outer(design.se_fac, s2))
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -277,11 +287,11 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
     # permuted |log2fc|, only needed when the calls also have an effect-size cut
     null_lfc = np.empty((n_report, n_perm * G), dtype=np.float32) if rcfg.min_abs_log2fc > 0 else None
     chunk = cfg.scaling.effect_gene_chunk
-    residual_df = 1
+    residual_df = 1.0
     for d in range(n_perm + 1):
         if d == 0:
             design = _Design(M, n_guides, fixed, alpha, n_report)
-            residual_df = max(n - design.p, 1)
+            residual_df = design.resid_df
         else:
             perm = _within_group_permutation(groups, rng)
             design = _Design(M[perm], None if n_guides is None else n_guides[perm], fixed, alpha, n_report)
@@ -294,7 +304,7 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
                 else sparse.csr_matrix(np.asarray(Y, dtype=np.float64)[fit_idx])
             )
             yty = np.asarray(Y.multiply(Y).sum(axis=0)).ravel()
-            coef, t = _fit_chunk(design, Y, yty, alpha, n, n_report)
+            coef, t = _fit_chunk(design, Y, yty, alpha, n_report)
             if d == 0:
                 coef_all[:, start:stop] = coef
                 t_all[:, start:stop] = t
@@ -380,7 +390,7 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
         "ridge_alpha": alpha,
         "n_permutations": n_perm,
         "null_values_per_target": n_perm * G,
-        "residual_df": residual_df,
+        "residual_df": round(residual_df, 2),
         "fdr_alpha": float(rcfg.fdr_alpha),
         "fdr_scope": rcfg.fdr_scope,
         "min_abs_log2fc": float(rcfg.min_abs_log2fc),

@@ -267,7 +267,10 @@ in <code>tables/pair_perturbation_by_target.csv</code>; per-target ECDFs in <cod
 <p class="lede">
   All targets fitted jointly, one linear model per gene over the assigned cells, with covariates and a ridge
   penalty on the membership coefficients, so each effect is adjusted for the targets co-carried in the same
-  cells. Permutations (membership rows shuffled within lanes) calibrate each target's t statistic (genomic
+  cells. Permutations (membership rows shuffled across cells
+  {%- if regression_stratum %} within <code>{{ regression_stratum }}</code>
+  {%- elif cfg.regression.batch_key %}, unstratified: <code>{{ cfg.regression.batch_key }}</code> is not in obs
+  {%- else %}, unstratified{% endif %}) calibrate each target's t statistic (genomic
   control) and give the empirical FDR of the call set (<code>empirical_fdr</code>);
   {% if cfg.regression.fdr_scope == 'global' %}BH across all target/gene pairs.{% else %}BH across genes within each target.{% endif %}
   Full matrices are in <code>tables/regression_effect_matrix.csv</code> and <code>tables/regression_fdr.csv</code>.

@@ -99,14 +99,18 @@ def test_solve_matches_dense_fit(alpha, covariates):
     A = X.T @ X + np.diag(pen)
     beta = np.linalg.solve(A, X.T @ Y)
     resid = Y - X @ beta
-    s2 = (resid**2).sum(axis=0) / (n - X.shape[1])
     Ainv = np.linalg.inv(A)
+    df_resid = n - np.trace(Ainv @ (X.T @ X))  # n - tr(H)
+    s2 = (resid**2).sum(axis=0) / df_resid
     V = Ainv @ (X.T @ X) @ Ainv
     t = beta[:k] / np.sqrt(np.outer(np.diag(V)[:k], s2))
     order = [int(name[1:]) for name in res.log2fc.index]
     np.testing.assert_allclose(res.log2fc.to_numpy() * math.log(2), beta[order], rtol=1e-7, atol=1e-9)
     np.testing.assert_allclose(res.tstat.to_numpy(), t[order], rtol=1e-6, atol=1e-8)
     assert ((res.pval.to_numpy() > 0) & (res.pval.to_numpy() <= 1)).all()
+    assert abs(res.info["residual_df"] - df_resid) < 0.01
+    if alpha == 0:
+        assert abs(df_resid - (n - X.shape[1])) < 1e-6
 
 
 def test_one_target_cells_reduce_to_mean_difference_vs_ntc():
@@ -216,6 +220,17 @@ def test_modules_never_fall_back_to_pseudobulk():
         modules_mod.compute_modules(a, cfg, regression=None)
 
 
+def test_saturated_design_is_rejected():
+    rng = np.random.default_rng(8)
+    k = 30
+    T = np.zeros((25, k + 1), dtype=np.int8)
+    for i in range(25):
+        T[i, rng.choice(k, size=3, replace=False)] = 1
+    a = _membership_adata(T, rng.normal(1.0, 0.3, size=(25, 4)), [f"T{j}" for j in range(k)])
+    with pytest.raises(ValueError, match="residual df"):
+        reg_mod.run_regression(a, _cfg(ridge_alpha=1e-8, batch_key=None, depth_covariate=False))
+
+
 def test_min_cells_reports_only_supported_targets_but_keeps_them_in_the_design():
     rng = np.random.default_rng(4)
     T = _random_design(rng, n=300, k=5)
@@ -282,7 +297,25 @@ def test_regression_end_to_end_moi4_with_modules_from_regression(tmp_path):
     status = result.module_status.set_index("module")["status"]
     assert status["regression"] == "completed" and status["modules"] == "completed"
     report = (Path(cfg.run.outdir) / "report.md").read_text()
-    assert "Membership regression (high-MOI)" in report
+    assert "Membership regression (high-MOI)" in report and "shuffled across cells within `lane_id`" in report
+    html = (Path(cfg.run.outdir) / "report.html").read_text()
+    assert "shuffled across cells within <code>lane_id</code>" in html
+    # module tables count member cells (membership), not primary-label cells
+    mods = pd.read_csv(tables / "cofunctional_modules.csv").set_index("target_gene")
+    for t in mods.index:
+        assert mods.loc[t, "n_cells"] >= summ.loc[t, "n_cells"]  # all carriers >= carriers among the fitted cells
+        assert mods.loc[t, "n_cells"] > 150
+
+
+def test_regression_stratum_reads_the_fitted_design():
+    from perturbseq_pipeline.report import regression_stratum
+
+    def design(value):
+        return {"regression_design": pd.DataFrame({"metric": ["n_cells_fit", "batch_key"], "value": ["10", value]})}
+
+    assert regression_stratum(design("lane_id")) == "lane_id"
+    assert regression_stratum(design("none")) is None  # null key, or the column was missing at fit time
+    assert regression_stratum({}) is None
 
 
 def test_modules_skipped_when_regression_has_no_result(tmp_path):
