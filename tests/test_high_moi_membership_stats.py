@@ -61,6 +61,8 @@ def test_membership_index_sets_and_counts():
     assert ind.shape == (2, res.n_obs) and ind[0].sum() == 3 and ind[1].sum() == 0
     gm = mi.guide_members(res, cfg, "X")
     assert set(gm) == {"X_1", "X_2"} and gm["X_1"].size == 2 and gm["X_2"].size == 1
+    assert mi._guide_matrix(res, cfg)[0] is mi._guide_matrix(res, cfg)[0]  # CSC guide matrix is built once
+    assert mi.guide_members(res, cfg, "nope") == {}
     assert membership_index(res, Config()) is None  # legacy modes never build an index
 
 
@@ -205,7 +207,16 @@ def test_high_moi_power_and_pseudo_target_fpr(tmp_path):
     enr = pd.read_csv(outdir / "tables" / "enrichment_full.csv")
     assert not enr["target_gene"].str.startswith("NTC:").any()
     dist = pd.read_csv(outdir / "tables" / "perturbation_distance.csv")
-    assert set(KD_TARGETS) <= set(dist["target_gene"]) and dist["target_gene"].str.startswith("NTC:").any()
+    assert set(KD_TARGETS) <= set(dist["target_gene"]) and not dist["target_gene"].str.startswith("NTC:").any()
+    dist_pseudo = pd.read_csv(outdir / "tables" / "perturbation_distance_pseudo_targets.csv")
+    assert dist_pseudo["target_gene"].str.startswith("NTC:").all() and len(dist_pseudo) >= 4
+    # own BH family: the real-target FDRs equal BH over the real p-values alone
+    from perturbseq_pipeline.perturbation import benjamini_hochberg
+
+    np.testing.assert_allclose(dist["fdr"].to_numpy(), benjamini_hochberg(dist["pvalue"].to_numpy()), rtol=1e-9)
+    assert not dist_pseudo["significant"].any() or dist_pseudo["significant"].mean() <= 0.25
+    meta = pd.read_csv(outdir / "tables" / "perturbation_meta.csv")
+    assert not meta["target_gene"].astype(str).str.startswith("NTC:").any()
     report = (outdir / "report.md").read_text()
     assert "negative-control pseudo-target" in report and "empirical" in report.lower()
     assert "PRIMARY (highest-UMI) target" in report  # the QC notice still names the primary-label stages

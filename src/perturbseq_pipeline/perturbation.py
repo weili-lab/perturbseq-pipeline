@@ -433,9 +433,13 @@ def _test_all_targets_large(expr: ad.AnnData, cfg: Config) -> PerturbationResult
     other_reference_targets = targets_col[other_reference_indices]
 
     def _other_keep(gene: str) -> np.ndarray:
-        """Reference cells not carrying ``gene`` (membership) / not labelled ``gene`` (legacy)."""
+        """Reference cells not carrying ``gene`` (membership) / not labelled ``gene`` (legacy).
+
+        The membership branch compares the (at most 100k) sampled indices with the
+        sparse member indices directly; no n_cells-sized mask is built per target.
+        """
         if membership is not None:
-            return ~membership.mask(gene)[other_reference_indices]
+            return ~np.isin(other_reference_indices, membership.indices(gene), assume_unique=True)
         return other_reference_targets != gene
     logger.info(
         "Large-data statistical references: %d/%d NTC cells and %d/%d targeting cells",

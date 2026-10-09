@@ -500,6 +500,7 @@ class MembershipIndex:
         self.targeting_indices = np.flatnonzero(self.targeting_mask).astype(np.int64)
         # Pseudo-targets: NTC guides -> member cell indices (any class)
         gkey = cfg.guides.high_moi.guide_membership_obsm_key
+        self._guide_cache = None
         self._pseudo: Dict[str, np.ndarray] = {}
         if gkey in expr.obsm and UNS_GUIDES in expr.uns:
             guide_ids = [str(g) for g in expr.uns[UNS_GUIDES]]
@@ -584,19 +585,29 @@ class MembershipIndex:
             rows.append([int(vc.get(c, 0)) for c in categories])
         return pd.DataFrame(rows, index=self.pseudo_targets, columns=list(categories), dtype=np.int64)
 
+    def _guide_matrix(self, expr: ad.AnnData, cfg: Config):
+        """Cached CSC guide membership matrix plus guide ids / targets (built once per index)."""
+        if getattr(self, "_guide_cache", None) is None:
+            gkey = cfg.guides.high_moi.guide_membership_obsm_key
+            if gkey not in expr.obsm or UNS_GUIDES not in expr.uns or UNS_GUIDE_TARGETS not in expr.uns:
+                self._guide_cache = (None, [], {})
+            else:
+                guide_ids = [str(g) for g in expr.uns[UNS_GUIDES]]
+                guide_targets = [str(t) for t in expr.uns[UNS_GUIDE_TARGETS]]
+                by_target: Dict[str, List[int]] = {}
+                for j, t in enumerate(guide_targets):
+                    by_target.setdefault(t, []).append(j)
+                self._guide_cache = (sparse.csc_matrix(expr.obsm[gkey]), guide_ids, by_target)
+        return self._guide_cache
+
     def guide_members(self, expr: ad.AnnData, cfg: Config, target: str) -> Dict[str, np.ndarray]:
         """{guide_id: member cell indices} for the guides of ``target`` (guide concordance)."""
-        gkey = cfg.guides.high_moi.guide_membership_obsm_key
-        if gkey not in expr.obsm or UNS_GUIDES not in expr.uns or UNS_GUIDE_TARGETS not in expr.uns:
+        G, guide_ids, by_target = self._guide_matrix(expr, cfg)
+        if G is None:
             return {}
-        guide_ids = [str(g) for g in expr.uns[UNS_GUIDES]]
-        guide_targets = [str(t) for t in expr.uns[UNS_GUIDE_TARGETS]]
-        G = sparse.csc_matrix(expr.obsm[gkey])
-        out = {}
-        for j, (g, t) in enumerate(zip(guide_ids, guide_targets)):
-            if t == target:
-                out[g] = G.indices[G.indptr[j] : G.indptr[j + 1]].astype(np.int64)
-        return out
+        return {
+            guide_ids[j]: G.indices[G.indptr[j] : G.indptr[j + 1]].astype(np.int64) for j in by_target.get(target, [])
+        }
 
     def indicator(self, targets: Sequence[str]) -> sparse.csr_matrix:
         """targets x cells 0/1 indicator (rows in the order given; unknown targets are empty rows)."""
