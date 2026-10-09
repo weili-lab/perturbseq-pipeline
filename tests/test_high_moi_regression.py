@@ -235,6 +235,30 @@ def test_saturated_design_is_rejected():
         reg_mod.run_regression(a, _cfg(ridge_alpha=1e-8, batch_key=None, depth_covariate=False))
 
 
+def test_exact_fit_gives_signed_infinite_t():
+    coef = np.array([[2.0, -1.5, 0.0, 0.3]])
+    se = np.array([[0.0, 0.0, 0.0, 0.1]])
+    t = reg_mod._t_stat(coef, se)
+    assert t[0, 0] == np.inf and t[0, 1] == -np.inf and t[0, 2] == 0.0
+    assert np.isclose(t[0, 3], 3.0)
+
+
+def test_report_formula_follows_the_fitted_design():
+    from perturbseq_pipeline.report import regression_formula, regression_ran
+
+    def tables(covs, batch):
+        return {"regression_design": pd.DataFrame({"metric": ["covariates", "batch_key"], "value": [covs, batch]})}
+
+    full = tables("n_guides_assigned, log_total_counts, lane_id=L2", "lane_id")
+    assert regression_formula(full) == "lognorm ~ membership (all targets) + n_guides + log(total_counts) + lane_id"
+    # a constant covariate dropped at fit time is not reported; no lane term when unstratified
+    assert (
+        regression_formula(tables("log_total_counts", "none"))
+        == "lognorm ~ membership (all targets) + log(total_counts)"
+    )
+    assert regression_ran(full) and not regression_ran({})
+
+
 def test_min_cells_reports_only_supported_targets_but_keeps_them_in_the_design():
     rng = np.random.default_rng(4)
     T = _random_design(rng, n=300, k=5)

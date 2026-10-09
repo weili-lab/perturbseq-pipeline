@@ -429,8 +429,9 @@ class RegressionConfig:
     Per gene ``lognorm ~ membership (all targets) + n_guides + log(total_counts)
     + lane``, ridge-penalised membership coefficients; t-test p-values calibrated
     per target on permutations (membership rows shuffled within ``batch_key``),
-    BH within target, and an empirical FDR of the call set from the same
-    permutations. See ``regression.py``.
+    BH over all (target, gene) pairs by default (``fdr_scope: global``; or
+    within each target, ``target``), and empirical FDRs of the call set from
+    the same permutations. See ``regression.py``.
     """
 
     #: Optional stage, off by default; set ``enabled: true`` to run it.

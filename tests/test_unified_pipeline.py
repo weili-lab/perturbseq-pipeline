@@ -118,6 +118,14 @@ def test_run_manifest_is_written_with_required_fields(minimal_run):
     assert "commit" in rec["git"] and "branch" in rec["git"]
 
 
+def test_legacy_report_has_no_high_moi_regression_section(minimal_run):
+    """The optional high-MOI regression stage must leave legacy HTML / Markdown reports without its section."""
+    out = Path(minimal_run.outdir)
+    assert 'id="regression"' not in (out / "report.html").read_text()  # the stage still has a module-status row
+    headings = [line for line in (out / "report.md").read_text().splitlines() if line.startswith("#")]
+    assert not any("Membership regression" in line for line in headings)
+
+
 def test_module_status_covers_every_stage(minimal_run):
     df = minimal_run.module_status
     assert list(df["module"]) == [k for k, _ in STAGES if k != "basic_qc"]

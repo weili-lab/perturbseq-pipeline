@@ -721,7 +721,12 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
                 f"{regression.info['n_targets_with_de']}/{regression.info['n_targets_reported']} targets with DE genes",
             )
         else:
-            status.mark("regression", STATUS_SKIPPED, f"no target with >= {cfg.regression.min_cells} member cells")
+            status.mark(
+                "regression",
+                STATUS_SKIPPED,
+                f"nothing to fit: no target with >= {cfg.regression.min_cells} member cells, "
+                f"or no genes selected (regression.genes: {cfg.regression.genes}); see the log",
+            )
     else:
         status.mark("regression", STATUS_DISABLED, "regression.enabled: false", enabled=False)
     # =====================================================================

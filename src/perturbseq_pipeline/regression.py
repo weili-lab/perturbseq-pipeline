@@ -186,9 +186,13 @@ def _fit_chunk(design: _Design, Y: sparse.csr_matrix, yty: np.ndarray, alpha: fl
     s2 = np.maximum(rss, 0.0) / design.resid_df
     coef = beta[:n_report]
     se = np.sqrt(np.outer(design.se_fac, s2))
+    return coef, _t_stat(coef, se)
+
+
+def _t_stat(coef: np.ndarray, se: np.ndarray) -> np.ndarray:
+    """coef / se; an exact fit (se 0) gives signed infinity for a nonzero coef and 0 for 0/0."""
     with np.errstate(divide="ignore", invalid="ignore"):
-        t = np.where(se > 0, coef / se, 0.0)
-    return coef, t
+        return np.where(se > 0, coef / se, np.where(coef != 0, np.copysign(np.inf, coef), 0.0))
 
 
 # ---------------------------------------------------------------------------

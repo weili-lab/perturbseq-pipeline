@@ -21,7 +21,7 @@ from typing import Iterable, List, Optional
 import pandas as pd
 
 from .plots import SECTION_CLUSTERING, SECTION_GUIDES, SECTION_PERTURBATION, SECTION_QC, FigureRegistry
-from .report import ReportInputs, _versions, regression_stratum
+from .report import ReportInputs, _versions, regression_formula, regression_stratum
 
 logger = logging.getLogger(__name__)
 
@@ -404,11 +404,7 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             H("Membership regression (high-MOI)"),
             "",
             "All targets fitted jointly, one linear model per gene over the assigned cells (targeting + NTC-only): "
-            "`lognorm ~ membership (all targets)"
-            + (" + n_guides" if r.n_guides_covariate else "")
-            + (" + log(total_counts)" if r.depth_covariate else "")
-            + (f" + {stratum}" if stratum else "")
-            + f"`, ridge penalty {r.ridge_alpha:g} on the membership coefficients. Unlike the pseudobulk contrasts, "
+            f"`{regression_formula(tables)}`, ridge penalty {r.ridge_alpha:g} on the membership coefficients. Unlike the pseudobulk contrasts, "
             "each effect is adjusted for the targets co-carried in the same cells. "
             f"Permutations ({r.n_permutations}; membership rows shuffled across cells{perm_scope}) "
             "calibrate each target's t statistic (genomic control: divided by sqrt(lambda), lambda = permuted median t² / its "
