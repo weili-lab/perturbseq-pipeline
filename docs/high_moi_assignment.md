@@ -122,9 +122,10 @@ the assigned cells (targeting + NTC-only):
 `lognorm ~ membership (all targets) + n_guides + log(total_counts) + lane`,
 with a ridge penalty (`regression.ridge_alpha`) on the membership coefficients
 only. Each effect is therefore adjusted for the targets co-carried in the same
-cells, which the pseudobulk contrasts above are not. The design is factorised
-once (targets x targets) and `Xᵀ Y` is accumulated over
-`scaling.effect_gene_chunk` gene chunks from the sparse layer.
+cells, which the pseudobulk contrasts above are not. Each design (the observed
+one and every permutation) is factorised once (targets x targets) and processed
+in turn, so only one factor is held in memory; `Xᵀ Y` is accumulated over
+`scaling.effect_gene_chunk` gene chunks from the sparse layer for each design.
 `regression.n_permutations` permutations shuffle the membership rows (with
 `n_guides`) across cells within `regression.batch_key`; they (1) calibrate each
 target's t statistic by genomic control (divided by `sqrt(lambda)`,
