@@ -605,6 +605,79 @@ def _plot_representation(expr, guides, reg: FigureRegistry, cfg: Config) -> None
 # Clustering figures
 
 
+def plot_high_moi_calling(expr, reg: FigureRegistry, cfg: Config) -> None:
+    """High-MOI membership diagnostics (only called in ``assignment_mode: high_moi``)."""
+    from .high_moi import OBS_N_GUIDES, OBS_N_TARGETS, UNS_RANK_PROFILE, cells_per_target
+
+    hcfg = cfg.guides.high_moi
+    obs = expr.obs
+    profile = expr.uns.get(UNS_RANK_PROFILE)
+    if profile is not None and len(profile):
+        prof = pd.DataFrame(profile)
+        fig, ax = plt.subplots(figsize=(5.4, 4.0))
+        ax.fill_between(prof["rank"], prof["p10_umi"] + 1, prof["p90_umi"] + 1, alpha=0.25, lw=0, label="p10-p90")
+        ax.plot(prof["rank"], prof["median_umi"] + 1, marker="o", ms=3, lw=1.2, label="median")
+        ax.axhline(hcfg.min_umi + 1, ls="--", lw=1, color="k", label=f"min_umi = {hcfg.min_umi}")
+        ax.set_yscale("log")
+        ax.set_xlabel("Guide rank within cell (by UMI)")
+        ax.set_ylabel("UMI count + 1")
+        ax.set_title("Rank-ordered guide UMI profile", fontsize=11)
+        ax.legend(fontsize=8, frameon=False)
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            "high_moi_rank_umi_profile",
+            SECTION_GUIDES,
+            "Rank-ordered guide UMI profile",
+            (
+                "Median (line) and p10-p90 band (shade) of the k-th ranked guide UMI count per cell. A knee between "
+                f"real integrations and ambient background should sit above the membership threshold (dashed, min_umi = {hcfg.min_umi})."
+            ),
+        )
+    if OBS_N_TARGETS in obs.columns:
+        nt = obs[OBS_N_TARGETS].to_numpy()
+        ng = obs[OBS_N_GUIDES].to_numpy()
+        fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.8))
+        for ax, vals, label in ((axes[0], ng, "Called guides per cell"), (axes[1], nt, "Targets per cell")):
+            top = int(min(max(vals.max(), 1), 40))
+            ax.hist(np.clip(vals, 0, top), bins=np.arange(-0.5, top + 1.5, 1))
+            ax.set_xlabel(label)
+            ax.set_ylabel("Cells")
+            sns.despine(ax=ax)
+        axes[0].axvline(hcfg.max_guides_per_cell + 0.5, ls="--", lw=1, color="k")
+        axes[0].set_title(f"Membership (median {np.median(ng[ng > 0]) if (ng > 0).any() else 0:.0f} guides / assigned cell)", fontsize=10)
+        axes[1].set_title("Distinct targets per cell", fontsize=10)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            "high_moi_guides_per_cell",
+            SECTION_GUIDES,
+            "Called guides and targets per cell",
+            f"Membership counts per cell; cells beyond max_guides_per_cell = {hcfg.max_guides_per_cell} (dashed) are classed ambiguous.",
+        )
+    try:
+        counts = cells_per_target(expr, cfg).drop(index=cfg.guides.ntc_label, errors="ignore")
+    except KeyError:
+        counts = pd.Series(dtype=int)
+    if len(counts):
+        fig, ax = plt.subplots(figsize=(5.2, 3.8))
+        ax.hist(np.log10(counts.to_numpy() + 1), bins=40)
+        ax.axvline(np.log10(cfg.perturbation.min_cells_per_target + 1), ls="--", lw=1, color="k")
+        ax.set_xlabel("log10(cells carrying the target + 1)")
+        ax.set_ylabel("Targets")
+        ax.set_title(f"Cells per target (median {np.median(counts):.0f})", fontsize=11)
+        sns.despine(ax=ax)
+        fig.tight_layout()
+        reg.save(
+            fig,
+            "high_moi_cells_per_target",
+            SECTION_GUIDES,
+            "Cells per target (membership)",
+            f"Number of cells carrying each target under membership; dashed line = perturbation.min_cells_per_target = {cfg.perturbation.min_cells_per_target}.",
+        )
+
+
 def plot_clustering(
     expr, reg: FigureRegistry, cfg: Config, *, name_prefix: str = "", section: str = SECTION_CLUSTERING, label: str = ""
 ) -> None:

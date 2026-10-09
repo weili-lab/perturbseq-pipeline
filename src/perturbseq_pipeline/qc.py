@@ -451,11 +451,36 @@ def guide_qc_summary(expr: ad.AnnData, cfg: Config) -> pd.DataFrame:
         second = obs[OBS_SECOND].to_numpy()
         ratio = top / np.maximum(second, 1.0)
         rows.append(("Median top:second guide ratio", f"{np.median(ratio):.1f}"))
+    if cfg.guides.assignment_mode == "high_moi":
+        rows.extend(_guide_qc_rows_high_moi(expr, cfg))
     return pd.DataFrame(rows, columns=["metric", "value"])
+
+
+def _guide_qc_rows_high_moi(expr: ad.AnnData, cfg: Config) -> List[Tuple[str, object]]:
+    """Membership rows appended to the guide-QC summary in high-MOI mode."""
+    from .high_moi import OBS_N_GUIDES, OBS_N_TARGETS, OBS_NTC_ONLY
+
+    obs = expr.obs
+    if OBS_N_GUIDES not in obs.columns:
+        return []
+    ng = obs[OBS_N_GUIDES].to_numpy()
+    nt = obs[OBS_N_TARGETS].to_numpy()
+    assigned = ng > 0
+    med = lambda v: f"{np.median(v):.0f}" if v.size else "n/a"
+    hcfg = cfg.guides.high_moi
+    return [
+        (f"Cells with >= 1 called guide (high-MOI, >= {hcfg.min_umi} UMI)", f"{int(assigned.sum()):,} ({100 * assigned.mean():.1f}%)"),
+        ("Median called guides per assigned cell", med(ng[assigned])),
+        ("Median targets per assigned cell", med(nt[assigned])),
+        ("NTC-only cells", f"{int(obs[OBS_NTC_ONLY].sum()):,}"),
+        (f"Cells above max_guides_per_cell={hcfg.max_guides_per_cell} (ambiguous)", f"{int((obs[OBS_CLASS].astype(str) == CLASS_AMBIGUOUS).sum()):,}"),
+    ]
 
 
 def check_guide_qc(expr: ad.AnnData, cfg: Config) -> List[str]:
     """Return human-readable warnings about guide assignment quality."""
+    if cfg.guides.assignment_mode == "high_moi":
+        return _check_guide_qc_high_moi(expr, cfg)
     warnings: List[str] = []
     obs = expr.obs
     n = expr.n_obs
@@ -492,6 +517,49 @@ def check_guide_qc(expr: ad.AnnData, cfg: Config) -> List[str]:
                 f"{100 * multi:.1f}% of cells carry more than one detected "
                 "guide; single-guide analysis assumptions may not hold."
             )
+    return warnings
+
+
+def _check_guide_qc_high_moi(expr: ad.AnnData, cfg: Config) -> List[str]:
+    """High-MOI mode: multi-guide cells are the design, so the single-guide warnings do not apply."""
+    from .high_moi import OBS_N_GUIDES, OBS_NTC_ONLY
+
+    warnings: List[str] = []
+    obs = expr.obs
+    n = expr.n_obs
+    if OBS_CLASS not in obs.columns or OBS_N_GUIDES not in obs.columns:
+        return warnings
+    hcfg = cfg.guides.high_moi
+    counts = obs[OBS_CLASS].value_counts()
+    assigned = int(counts.get(CLASS_TARGETING, 0)) + int(counts.get(CLASS_NTC, 0))
+    frac = assigned / max(n, 1)
+    if frac < 0.5:
+        warnings.append(
+            f"Only {100 * frac:.1f}% of cells received at least one called guide. "
+            f"Consider lowering guides.high_moi.min_umi (currently {hcfg.min_umi}) or "
+            f"guides.high_moi.min_frac_of_top (currently {hcfg.min_frac_of_top})."
+        )
+    n_ntc_only = int(obs[OBS_NTC_ONLY].sum())
+    if n_ntc_only < cfg.perturbation.min_control_cells:
+        warnings.append(
+            f"Only {n_ntc_only} NTC-only cells (cells carrying non-targeting guides and no targeting guide); "
+            f"perturbation.min_control_cells is {cfg.perturbation.min_control_cells}, so the 'ntc' control arm "
+            "is skipped. In a high-MOI design the usable control is 'other' (cells not carrying the target): "
+            "set perturbation.primary_control: other."
+        )
+    over_cap = int(counts.get(CLASS_AMBIGUOUS, 0))
+    if over_cap / max(n, 1) > 0.05:
+        warnings.append(
+            f"{100 * over_cap / max(n, 1):.1f}% of cells carry more than guides.high_moi.max_guides_per_cell="
+            f"{hcfg.max_guides_per_cell} called guides and are classed ambiguous (doublet-like). "
+            "Check the rank-ordered guide UMI profile; raise the cap only if the knee supports it."
+        )
+    warnings.append(
+        "High-MOI mode: the stages below test every cell under its PRIMARY (highest-UMI) target only. "
+        "The full cells x targets membership is stored in obsm['"
+        f"{hcfg.membership_obsm_key}'] (targets in uns['membership_targets']); membership-aware "
+        "perturbation / enrichment statistics are not yet part of this pipeline version."
+    )
     return warnings
 
 

@@ -6,6 +6,7 @@
 |---|---|---|
 | `single_guide` (default) | top guide reaches `min_umi`, beats the runner-up by `dominance_ratio`, runner-up within `max_second_umi` | the top guide's target |
 | `dual_guide_pair` (alias `pair`) | the strongest guide of **each scaffold class** passes the same gate against the runner-up of its own class; the (A, C) pair is then interpreted | the pair's target |
+| `high_moi` | every guide with `>= guides.high_moi.min_umi` UMIs (and a fraction of the cell's top guide) is called; the cell is a member of all their targets — see [high_moi_assignment.md](high_moi_assignment.md) | the highest-UMI targeting guide's target (primary label) |
 
 Both modes write the same downstream contract: `obs['target_gene']`,
 `obs['perturbation_class']` (`targeting` / `non-targeting` / `ambiguous` /

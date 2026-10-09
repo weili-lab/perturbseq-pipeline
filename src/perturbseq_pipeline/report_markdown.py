@@ -100,6 +100,7 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
     run_dir = Path(cfg.run.outdir)
     T = lambda k, n=60: md_table(tables.get(k), n)
     pair_mode = "pair_assignment_per_lane" in tables
+    high_moi_mode = "high_moi_calling" in tables
     H = _Numbering()
     L: List[str] = []
     L += [
@@ -173,6 +174,23 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         "",
     ]
     # ---- guide assignment ---------------------------------------------------------------------------
+    if high_moi_mode:
+        hm = cfg.guides.high_moi
+        L += [
+            H("High-MOI guide calling"),
+            "",
+            f"Membership rule (`guides.high_moi.method: {hm.method}`): a guide is called in a cell when it has >= {hm.min_umi} UMIs"
+            + (f" and >= {hm.min_frac_of_top:g} x the cell's top guide" if hm.method == "threshold" else " and lies above the largest log-UMI drop of the cell")
+            + f"; cells with more than {hm.max_guides_per_cell} called guides are classed ambiguous. Non-targeting guides collapse into one `{cfg.guides.ntc_label}` membership column.",
+            "",
+            "**Downstream stages in this version test each cell under its primary (highest-UMI) target only.** The full "
+            f"cells x targets membership is stored in `obsm['{hm.membership_obsm_key}']` with target names in `uns['membership_targets']`.",
+            "",
+            T("high_moi_calling"),
+            "Rank-ordered guide UMI profile (median and p10-p90 of the k-th ranked guide per cell):",
+            "",
+            T("high_moi_rank_umi_profile", 25),
+        ]
     if pair_mode:
         L += [
             H("Pair-guide QC"),

@@ -87,6 +87,10 @@ def _structure_flags(detected: sp.csr_matrix, design: pd.DataFrame, cfg: Config)
             structure &= n_by_class[c] == mcfg.expected_guides_per_scaffold
         multiplet |= n_unknown > mcfg.max_guides_per_scaffold
         structure &= n_unknown == 0
+    elif mcfg.expected_guides_per_cell is None:
+        # High-MOI design: several guides per cell are expected; no per-cell multiplet flag.
+        multiplet = np.zeros(detected.shape[0], dtype=bool)
+        structure = np.ones(detected.shape[0], dtype=bool)
     else:
         multiplet = n_guides > mcfg.expected_guides_per_cell
         structure = n_guides == mcfg.expected_guides_per_cell

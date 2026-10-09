@@ -131,6 +131,26 @@
 {% for f in figures.qc %}{{ render_figure(f) }}{% endfor %}
 
 <h3>1.4 Perturb-seq guide QC</h3>
+{% if cfg.guides.assignment_mode == 'high_moi' %}
+<p class="lede">
+  <b>High-MOI membership calling is the assignment mode for this run.</b> A guide is called in a cell when it has
+  <code>{{ cfg.guides.high_moi.min_umi }}</code> or more UMIs{% if cfg.guides.high_moi.method == 'threshold' %} and at least
+  <code>{{ cfg.guides.high_moi.min_frac_of_top }}</code> x the cell's top guide{% else %} and lies above the largest
+  log-UMI drop of the cell (knee){% endif %}; a cell is a member of every target its called guides map to, and
+  non-targeting guides collapse into one <code>{{ cfg.guides.ntc_label }}</code> column. Cells with more than
+  <code>{{ cfg.guides.high_moi.max_guides_per_cell }}</code> called guides are <i>ambiguous</i> (doublet-like); cells
+  with no called guide are <i>unassigned</i>. The stages below test each cell under its <b>primary</b> (highest-UMI)
+  target; the full membership is in <code>obsm['{{ cfg.guides.high_moi.membership_obsm_key }}']</code>.
+</p>
+{% if tables.high_moi_calling %}
+<h4>Membership calling summary</h4>
+{{ tables.high_moi_calling }}
+{% endif %}
+{% if tables.high_moi_rank_umi_profile %}
+<h4>Rank-ordered guide UMI profile</h4>
+{{ tables.high_moi_rank_umi_profile }}
+{% endif %}
+{% else %}
 <p class="lede">
   Guide calling: a cell is assigned to its top guide when that guide reaches
   <code>{{ cfg.guides.min_umi }}</code> UMIs and exceeds the runner-up by a
@@ -138,6 +158,7 @@
   dominance rule are <i>ambiguous</i>; cells with no guide counts are
   <i>unassigned</i>. Both are kept in the object and shown here.
 </p>
+{% endif %}
 {% if cfg.guides.assignment_mode in ('pair', 'dual_guide_pair') %}
 <p class="lede">
   <b>Pair-guide assignment is the primary label set for this run.</b> For each scaffold class
