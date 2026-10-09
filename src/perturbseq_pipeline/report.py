@@ -326,6 +326,15 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "control_label": (
                 CONTROL_LABELS_MEMBERSHIP if cfg.guides.assignment_mode == "high_moi" else CONTROL_LABELS
             ).get(mods.control, mods.control),
+            # what the matrix holds: a contrast vs a control, or the membership-regression coefficients
+            "effect_description": (
+                "membership-regression effects (log2 scale, adjusted for co-carried targets and covariates)"
+                if mods.control == "regression"
+                else "log2FC vs "
+                + (CONTROL_LABELS_MEMBERSHIP if cfg.guides.assignment_mode == "high_moi" else CONTROL_LABELS).get(
+                    mods.control, mods.control
+                )
+            ),
             "module_correlation": mods.module_correlation,
             "program_correlation": mods.program_correlation,
             "linkage": mods.linkage_method,

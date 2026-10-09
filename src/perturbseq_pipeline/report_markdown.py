@@ -452,7 +452,13 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         L += [
             H("Co-functional modules and gene programs"),
             "",
-            f"Perturbation x gene log2FC-vs-`{m.control}` matrix; perturbations clustered into modules ({m.module_correlation} correlation), genes into programs ({m.program_correlation} correlation), {m.linkage_method} linkage. "
+            (
+                "Perturbation x gene matrix of membership-regression effects (log2 scale, adjusted for co-carried "
+                "targets and covariates; `modules.effect_source: regression`)"
+                if m.effect_source == "regression"
+                else f"Perturbation x gene log2FC-vs-`{m.control}` matrix"
+            )
+            + f"; perturbations clustered into modules ({m.module_correlation} correlation), genes into programs ({m.program_correlation} correlation), {m.linkage_method} linkage. "
             "Programs are annotated by over-representation against MSigDB collections downloaded at run time; `unannotated` means no term passed FDR, or (see Warnings) that the enrichment did not run.",
             "",
             "Programs:",

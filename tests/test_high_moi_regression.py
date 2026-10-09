@@ -318,7 +318,8 @@ def test_regression_end_to_end_moi4_with_modules_from_regression(tmp_path):
     fdr = pd.read_csv(tables / "regression_fdr.csv", index_col=0)
     assert eff.shape == fdr.shape and set(eff.index) == set(summ.index)
     de = pd.read_csv(tables / "regression_de.csv")
-    assert set(de["target_gene"]) >= set(KD_TARGETS)
+    assert set(de["target_gene"]) == set(KD_TARGETS)  # null targets have no calls
+    assert (summ.loc[NULL_TARGETS, "n_de_genes"] == 0).all()
     # the modules were built from the regression matrix
     mod_eff = pd.read_csv(tables / "effect_matrix.csv", index_col=0)
     pd.testing.assert_frame_equal(mod_eff, eff.loc[mod_eff.index, mod_eff.columns], check_exact=False, rtol=1e-9)
@@ -326,8 +327,10 @@ def test_regression_end_to_end_moi4_with_modules_from_regression(tmp_path):
     assert status["regression"] == "completed" and status["modules"] == "completed"
     report = (Path(cfg.run.outdir) / "report.md").read_text()
     assert "Membership regression (high-MOI)" in report and "shuffled across cells within `lane_id`" in report
+    assert "matrix of membership-regression effects" in report and "log2FC-vs-" not in report
     html = (Path(cfg.run.outdir) / "report.html").read_text()
     assert "shuffled across cells within <code>lane_id</code>" in html
+    assert "matrix of membership-regression effects" in html and "log2FC vs regression" not in html
     # module tables count member cells (membership), not primary-label cells
     mods = pd.read_csv(tables / "cofunctional_modules.csv").set_index("target_gene")
     for t in mods.index:
