@@ -1117,6 +1117,10 @@ class HighMoiConfig:
     guide_membership_obsm_key: str = "guide_membership"
     #: Ranks summarised in the rank-ordered guide UMI profile (knee diagnostic).
     rank_profile_max_rank: int = 20
+    #: Test every non-targeting guide as a negative-control pseudo-target in the
+    #: membership-aware statistics (enrichment, distance), giving an empirical
+    #: false-positive rate. Pseudo-targets are named ``NTC:<guide>``.
+    ntc_pseudo_targets: bool = True
 
 
 @dataclass

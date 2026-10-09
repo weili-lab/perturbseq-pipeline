@@ -22,7 +22,7 @@ from markupsafe import Markup
 
 from . import __version__
 from .config import Config
-from .perturbation import CONTROL_LABELS, PerturbationResults
+from .perturbation import CONTROL_LABELS, CONTROL_LABELS_MEMBERSHIP, PerturbationResults
 from .plots import (
     SECTION_CLUSTERING,
     SECTION_ENRICH_PER_TARGET,
@@ -156,6 +156,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "skipped",
             "manifest",
             "enrichment",
+            "enrichment_pseudo_summary",
+            "enrichment_pseudo_targets",
             "ps_score",
             "lochness",
             "cofunctional_modules",
@@ -189,8 +191,10 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "n_targets": int(enr.composition.shape[0]),
             "n_clusters": int(enr.composition.shape[1]),
             "n_tests": int(enr.composition.shape[0] * enr.composition.shape[1]),
-            "control_label": CONTROL_LABELS[enr.primary_control],
-            "controls_described": " and ".join(CONTROL_LABELS[c] for c in enr.controls_used),
+            "control_label": (CONTROL_LABELS_MEMBERSHIP if enr.membership_aware else CONTROL_LABELS)[enr.primary_control],
+            "controls_described": " and ".join(
+                (CONTROL_LABELS_MEMBERSHIP if enr.membership_aware else CONTROL_LABELS)[c] for c in enr.controls_used
+            ),
             "chi2": f"{om.get('chi2', float('nan')):.0f}",
             "dof": om.get("dof", 0),
             "p_perm": f"{om.get('p_permutation', float('nan')):.3g}",
@@ -279,7 +283,9 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "n_programs": mods.n_programs,
             "n_perturbations": int(mods.effect_matrix.shape[0]),
             "n_genes": int(mods.effect_matrix.shape[1]),
-            "control_label": CONTROL_LABELS.get(mods.control, mods.control),
+            "control_label": (
+                CONTROL_LABELS_MEMBERSHIP if cfg.guides.assignment_mode == "high_moi" else CONTROL_LABELS
+            ).get(mods.control, mods.control),
             "module_correlation": mods.module_correlation,
             "program_correlation": mods.program_correlation,
             "linkage": mods.linkage_method,
@@ -356,7 +362,7 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "metric": dist_space.metric,
             "linkage": dist_space.linkage_method,
         }
-    controls_described = " and ".join(CONTROL_LABELS[c] for c in res.controls_used)
+    controls_described = " and ".join(res.control_labels[c] for c in res.controls_used)
     primary_fallback = res.primary_control != cfg.perturbation.primary_control
     n_hits = len(res.hits) if not res.table.empty else 0
     perturbation_cards = [
@@ -382,7 +388,7 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         figures=figures,
         render_figure=lambda f: _render_figure(f, embed),
         controls_described=controls_described,
-        primary_control_label=CONTROL_LABELS[res.primary_control],
+        primary_control_label=res.control_labels[res.primary_control],
         primary_fallback=primary_fallback,
         perturbation_cards=perturbation_cards,
         n_top_shown=len(figures["per_gene"]),

@@ -172,6 +172,7 @@ guides:
     membership_obsm_key: perturbation_membership
     guide_membership_obsm_key: guide_membership
     rank_profile_max_rank: 20
+    ntc_pseudo_targets: true
 cluster:
   target_sum: null
   n_top_genes: 3000

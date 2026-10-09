@@ -14,7 +14,9 @@ Outputs (the contract every later stage can build on)
     cells x targets, sparse CSR int8; 1 where the cell carries at least one
     guide of the target. Non-targeting guides collapse into one final column
     named ``guides.ntc_label``; ``uns['membership_targets']`` holds the column
-    names and ``uns['membership_guides']`` the guide ids.
+    names, ``uns['membership_guides']`` the guide ids and
+    ``uns['membership_ntc_guides']`` the ids of the non-targeting guides (the
+    negative-control pseudo-targets of the membership-aware statistics).
 ``obs['n_guides_assigned']``, ``obs['n_targets_assigned']``
     row sums (targets exclude the NTC column).
 ``obs['n_guides_called']``
@@ -41,7 +43,7 @@ The ``single_guide`` and ``dual_guide_pair`` paths are untouched by this module.
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import anndata as ad
 import numpy as np
@@ -80,6 +82,8 @@ OBS_N_TARGETS = "n_targets_assigned"
 OBS_NTC_ONLY = "is_ntc_only"
 UNS_TARGETS = "membership_targets"
 UNS_GUIDES = "membership_guides"
+UNS_NTC_GUIDES = "membership_ntc_guides"
+UNS_GUIDE_TARGETS = "membership_guide_targets"
 UNS_CALLING = "high_moi_calling"
 UNS_RANK_PROFILE = "high_moi_rank_umi_profile"
 
@@ -286,6 +290,8 @@ def assign_high_moi(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad.Ann
     expr.obsm[hcfg.membership_obsm_key] = T
     expr.uns[UNS_TARGETS] = list(columns)
     expr.uns[UNS_GUIDES] = list(guide_ids)
+    expr.uns[UNS_NTC_GUIDES] = [str(g) for g in guide_ids[ntc_guide & ~unusable]]
+    expr.uns[UNS_GUIDE_TARGETS] = [str(t) for t in guide_targets]
     expr.uns[UNS_RANK_PROFILE] = _rank_umi_profile(X, hcfg.rank_profile_max_rank)
     expr.uns[UNS_CALLING] = {
         "method": hcfg.method,
@@ -457,3 +463,180 @@ def high_moi_tables(expr: ad.AnnData, cfg: Config, lane_key: str = "lane_id") ->
         .reset_index(drop=True)
     )
     return {TABLE_CALLING: calling, TABLE_RANK_PROFILE: profile, TABLE_CELLS_PER_TARGET: per_target}
+
+
+# ===========================================================================
+# Membership-aware statistics: per-target cell sets
+# ===========================================================================
+
+PSEUDO_PREFIX = "NTC:"
+
+
+class MembershipIndex:
+    """Per-target cell sets derived from the membership matrices.
+
+    ``targets`` are the targeting columns (the NTC column is excluded); every
+    member cell of a target is a ``targeting`` cell by construction. The
+    membership-aware control for target *t* is ``targeting_mask & ~mask(t)``:
+    cells that carry at least one targeting guide but none for *t*.
+
+    ``pseudo_targets`` are the non-targeting guides, each treated like a target
+    (cells carrying that NTC guide), so the false-positive rate of any
+    per-target statistic can be measured on constructs with no biological
+    effect. Their names carry the ``NTC:`` prefix.
+    """
+
+    def __init__(self, expr: ad.AnnData, cfg: Config):
+        T = membership_matrix(expr, cfg)
+        names = membership_targets(expr)
+        self.ntc_label = cfg.guides.ntc_label
+        cols = [i for i, t in enumerate(names) if t != self.ntc_label]
+        self.targets: List[str] = [names[i] for i in cols]
+        self._pos = {t: j for j, t in enumerate(self.targets)}
+        self._csc = sparse.csc_matrix(T[:, cols], dtype=np.int8)
+        self.n_cells = int(T.shape[0])
+        self.counts = pd.Series(np.asarray(self._csc.sum(axis=0)).ravel().astype(int), index=self.targets)
+        self.targeting_mask = np.asarray(self._csc.sum(axis=1)).ravel() > 0
+        self.targeting_indices = np.flatnonzero(self.targeting_mask).astype(np.int64)
+        # Guide-level data (pseudo-targets, guide concordance) is converted lazily, once, on first use:
+        # the perturbation / modules paths never need it.
+        gkey = cfg.guides.high_moi.guide_membership_obsm_key
+        self._guide_src = expr.obsm[gkey] if gkey in expr.obsm else None
+        self._guide_ids: List[str] = [str(g) for g in expr.uns[UNS_GUIDES]] if UNS_GUIDES in expr.uns else []
+        self._guide_targets: List[str] = (
+            [str(t) for t in expr.uns[UNS_GUIDE_TARGETS]] if UNS_GUIDE_TARGETS in expr.uns else []
+        )
+        if UNS_NTC_GUIDES in expr.uns:
+            self._ntc_ids = {str(g) for g in expr.uns[UNS_NTC_GUIDES]}
+        else:
+            self._ntc_ids = {g for g, f in zip(self._guide_ids, is_non_targeting(self._guide_ids, cfg.guides)) if f}
+        self._guide_cache = None
+        self._pseudo: Optional[Dict[str, np.ndarray]] = None
+
+    def _guide_matrix(self, expr=None, cfg=None):
+        """Cached (CSC guide membership, guide ids, target -> guide columns); built once per index."""
+        if self._guide_cache is None:
+            if self._guide_src is None or not self._guide_ids:
+                self._guide_cache = (None, [], {})
+            else:
+                by_target: Dict[str, List[int]] = {}
+                for j, t in enumerate(self._guide_targets):
+                    by_target.setdefault(t, []).append(j)
+                self._guide_cache = (sparse.csc_matrix(self._guide_src), list(self._guide_ids), by_target)
+                self._guide_src = None  # the CSR source is no longer needed
+        return self._guide_cache
+
+    def _ensure_pseudo(self) -> Dict[str, np.ndarray]:
+        """NTC guides -> member cell indices (any class), from the shared guide-matrix cache."""
+        if self._pseudo is None:
+            self._pseudo = {}
+            G, guide_ids, _ = self._guide_matrix()
+            if G is not None:
+                for j, g in enumerate(guide_ids):
+                    if g in self._ntc_ids:
+                        idx = G.indices[G.indptr[j] : G.indptr[j + 1]].astype(np.int64)
+                        if idx.size:
+                            self._pseudo[PSEUDO_PREFIX + g] = np.sort(idx)
+        return self._pseudo
+
+    # -- real targets
+    def has(self, target: str) -> bool:
+        return target in self._pos or target in self._ensure_pseudo()
+
+    def indices(self, target: str) -> np.ndarray:
+        """Sorted cell indices carrying ``target`` (or a pseudo-target)."""
+        if self.is_pseudo(target):
+            return self._ensure_pseudo().get(target, np.empty(0, dtype=np.int64))
+        j = self._pos.get(target)
+        if j is None:
+            return np.empty(0, dtype=np.int64)
+        return self._csc.indices[self._csc.indptr[j] : self._csc.indptr[j + 1]].astype(np.int64)
+
+    def mask(self, target: str) -> np.ndarray:
+        out = np.zeros(self.n_cells, dtype=bool)
+        out[self.indices(target)] = True
+        return out
+
+    def other_mask(self, target: str) -> np.ndarray:
+        """Targeting cells not carrying ``target`` (the membership-aware 'other' control)."""
+        return self.targeting_mask & ~self.mask(target)
+
+    def other_indices(self, target: str) -> np.ndarray:
+        return np.flatnonzero(self.other_mask(target)).astype(np.int64)
+
+    # -- pseudo-targets
+    @property
+    def pseudo_targets(self) -> List[str]:
+        return sorted(self._ensure_pseudo())
+
+    def pseudo_counts(self) -> pd.Series:
+        return pd.Series({k: int(v.size) for k, v in self._ensure_pseudo().items()}, dtype=int)
+
+    @staticmethod
+    def is_pseudo(target: str) -> bool:
+        return str(target).startswith(PSEUDO_PREFIX)
+
+    # -- aggregated counts
+    def counts_by(self, values: np.ndarray, categories: Sequence[str], cell_mask: Optional[np.ndarray] = None) -> pd.DataFrame:
+        """targets x categories: number of member cells per category (``membership.T @ onehot``).
+
+        ``cell_mask`` restricts the cells counted (e.g. to one stratum).
+        """
+        values = np.asarray(values).astype(str)
+        cat_pos = {c: i for i, c in enumerate(categories)}
+        codes = np.array([cat_pos.get(v, -1) for v in values], dtype=np.int64)
+        keep = codes >= 0
+        if cell_mask is not None:
+            keep &= np.asarray(cell_mask, dtype=bool)
+        rows = np.flatnonzero(keep)
+        onehot = sparse.csr_matrix(
+            (np.ones(rows.size, dtype=np.int64), (rows, codes[rows])), shape=(self.n_cells, len(categories))
+        )
+        counts = (self._csc.T.astype(np.int64) @ onehot).toarray()
+        return pd.DataFrame(counts, index=self.targets, columns=list(categories))
+
+    def pseudo_counts_by(
+        self, values: np.ndarray, categories: Sequence[str], cell_mask: Optional[np.ndarray] = None
+    ) -> pd.DataFrame:
+        """pseudo-targets x categories counts (same convention as :meth:`counts_by`)."""
+        values = np.asarray(values).astype(str)
+        rows = []
+        pseudo = self._ensure_pseudo()
+        for name in self.pseudo_targets:
+            idx = pseudo[name]
+            if cell_mask is not None:
+                idx = idx[np.asarray(cell_mask, dtype=bool)[idx]]
+            vc = pd.Series(values[idx]).value_counts()
+            rows.append([int(vc.get(c, 0)) for c in categories])
+        return pd.DataFrame(rows, index=self.pseudo_targets, columns=list(categories), dtype=np.int64)
+
+    def guide_members(self, expr: ad.AnnData, cfg: Config, target: str) -> Dict[str, np.ndarray]:
+        """{guide_id: member cell indices} for the guides of ``target`` (guide concordance).
+
+        ``expr`` / ``cfg`` are accepted for API stability; the data come from the index's own cache.
+        """
+        G, guide_ids, by_target = self._guide_matrix()
+        if G is None:
+            return {}
+        return {
+            guide_ids[j]: G.indices[G.indptr[j] : G.indptr[j + 1]].astype(np.int64) for j in by_target.get(target, [])
+        }
+
+    def indicator(self, targets: Sequence[str]) -> sparse.csr_matrix:
+        """targets x cells 0/1 indicator (rows in the order given; unknown targets are empty rows)."""
+        blocks = []
+        for t in targets:
+            idx = self.indices(t)
+            blocks.append(
+                sparse.csr_matrix((np.ones(idx.size, dtype=np.float64), (np.zeros(idx.size, dtype=np.int64), idx)), shape=(1, self.n_cells))
+            )
+        if not blocks:
+            return sparse.csr_matrix((0, self.n_cells), dtype=np.float64)
+        return sparse.csr_matrix(sparse.vstack(blocks))
+
+
+def membership_index(expr: ad.AnnData, cfg: Config) -> Optional["MembershipIndex"]:
+    """The index in ``high_moi`` mode, ``None`` otherwise (the legacy stages then run unchanged)."""
+    if not is_high_moi_mode(cfg):
+        return None
+    return MembershipIndex(expr, cfg)

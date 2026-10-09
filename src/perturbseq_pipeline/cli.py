@@ -703,6 +703,14 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
         # composition is indexed by target; write directly without reset_index.
         _write_indexed_matrix("enrichment_composition", enrichment.composition, "target_gene", tabledir, table_paths)
         _write_table("enrichment_effect_magnitude", enrichment.effect_magnitude, tabledir, table_paths)
+        if enrichment.membership_aware and not enrichment.pseudo_table.empty:
+            tables["enrichment_pseudo_targets"] = enrichment.pseudo_table
+            _write_table("enrichment_pseudo_targets", enrichment.pseudo_table, tabledir, table_paths)
+            pseudo_summary = pd.DataFrame(
+                [(k, v) for k, v in enrichment.pseudo_summary.items()], columns=["metric", "value"]
+            )
+            tables["enrichment_pseudo_summary"] = pseudo_summary
+            _write_table("enrichment_pseudo_summary", pseudo_summary, tabledir, table_paths)
         tables["enrichment"] = enrichment_fmt
         _table_for_report(
             tables,
@@ -884,9 +892,19 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
         status.start("distance")
         logger.info("=== Stage 10/14: perturbation distance vs control ===")
         distance_results = dist_mod.compute_perturbation_distance(expr, cfg)
-        if distance_results is not None and not distance_results.table.empty:
-            _write_table("perturbation_distance", distance_results.table, tabledir, table_paths)
-            tables["perturbation_distance"] = distance_results.table
+        has_pseudo = (
+            distance_results is not None
+            and distance_results.membership_aware
+            and not distance_results.pseudo_table.empty
+        )
+        if has_pseudo:
+            # written independently of the real table: a run can have eligible NTC pseudo-targets only
+            _write_table("perturbation_distance_pseudo_targets", distance_results.pseudo_table, tabledir, table_paths)
+            tables["perturbation_distance_pseudo_targets"] = distance_results.pseudo_table
+        if distance_results is not None and (not distance_results.table.empty or has_pseudo):
+            if not distance_results.table.empty:
+                _write_table("perturbation_distance", distance_results.table, tabledir, table_paths)
+                tables["perturbation_distance"] = distance_results.table
             if not distance_results.skipped.empty:
                 _write_table("distance_skipped", distance_results.skipped, tabledir, table_paths)
                 _table_for_report(

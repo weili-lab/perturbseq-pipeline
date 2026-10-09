@@ -82,7 +82,7 @@ from scipy.stats import chi2_contingency, fisher_exact
 from .compute import log_compute_decision, resolve_stage_backend, run_parallel
 from .config import Config
 from .guides import CLASS_NTC, CLASS_TARGETING, OBS_CLASS, OBS_GUIDE, OBS_TARGET
-from .perturbation import CONTROL_LABELS, CONTROL_NTC, CONTROL_OTHER, benjamini_hochberg
+from .perturbation import CONTROL_LABELS, CONTROL_LABELS_MEMBERSHIP, CONTROL_NTC, CONTROL_OTHER, benjamini_hochberg
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,13 @@ class EnrichmentResults:
     #: True when CMH stratification was used.
     stratified: bool = False
     stratify_by: Optional[str] = None
+    #: High-MOI mode: sets come from the membership matrix.
+    membership_aware: bool = False
+    #: High-MOI mode: the same tests for the non-targeting guides treated as
+    #: pseudo-targets (``NTC:<guide>``), with their own BH-FDR.
+    pseudo_table: pd.DataFrame = field(default_factory=pd.DataFrame)
+    #: Empirical false-positive summary from the pseudo-targets.
+    pseudo_summary: Dict[str, float] = field(default_factory=dict)
 
     @property
     def hits(self) -> pd.DataFrame:
@@ -285,6 +292,8 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
 
     This preserves the previous behaviour for ordinary-sized datasets.
     """
+    from .high_moi import membership_index
+
     ecfg = cfg.enrichment
     obs = expr.obs
     cluster_key = ecfg.cluster_key
@@ -296,6 +305,19 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
     clusters_all = obs[cluster_key].astype(str).to_numpy()
     targets_col = obs[OBS_TARGET].astype(str).to_numpy()
     klass = obs[OBS_CLASS].astype(str).to_numpy()
+    membership = membership_index(expr, cfg)
+
+    def _pert(gene: str) -> np.ndarray:
+        if membership is not None:
+            return membership.mask(gene)
+        return (targets_col == gene) & (klass == CLASS_TARGETING)
+
+    def _ref(control: str, gene: str) -> np.ndarray:
+        if membership is not None:
+            if control == CONTROL_NTC:
+                return (klass == CLASS_NTC) & ~membership.mask(gene)
+            return membership.other_mask(gene)
+        return _reference_mask(control, klass, targets_col, gene)
     cluster_sizes = pd.Series(clusters_all).value_counts()
     ordered_clusters = _cluster_order(clusters_all)
     clusters = [c for c in ordered_clusters if cluster_sizes.get(c, 0) >= ecfg.min_cells_per_cluster]
@@ -342,7 +364,10 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
             stratified = True
             logger.info("Using Cochran-Mantel-Haenszel stratified by %r (%d strata)", ecfg.stratify_by, n_strata)
     # Targets
-    target_counts = pd.Series(targets_col[klass == CLASS_TARGETING]).value_counts()
+    if membership is not None:
+        target_counts = membership.counts
+    else:
+        target_counts = pd.Series(targets_col[klass == CLASS_TARGETING]).value_counts()
     testable = sorted(target_counts[target_counts >= ecfg.min_cells_per_target].index)
     skipped = pd.DataFrame(
         [
@@ -355,7 +380,8 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
             if n < ecfg.min_cells_per_target
         ]
     )
-    if not testable:
+    pseudo_targets = _pseudo_target_list(membership, cfg)
+    if not testable and not pseudo_targets:
         logger.warning("No target has enough cells for the enrichment test.")
         return EnrichmentResults(
             table=pd.DataFrame(),
@@ -366,15 +392,20 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
             primary_control=primary,
             skipped=skipped,
             cluster_key=cluster_key,
+            membership_aware=membership is not None,
         )
+    if not testable:
+        logger.warning("No real target has enough cells for the enrichment test; testing the NTC pseudo-targets only.")
     # Composition
     in_cluster = {cluster: (clusters_all == cluster) for cluster in clusters}
     comp_rows = {}
     for gene in testable:
-        mask = (targets_col == gene) & (klass == CLASS_TARGETING)
+        mask = _pert(gene)
         n = int(mask.sum())
         comp_rows[gene] = {cluster: (100 * float((mask & in_cluster[cluster]).sum()) / n) for cluster in clusters}
-    composition = pd.DataFrame.from_dict(comp_rows, orient="index")[clusters]
+    composition = (
+        pd.DataFrame.from_dict(comp_rows, orient="index")[clusters] if testable else pd.DataFrame(columns=clusters)
+    )
     # Reference compositions
     reference_composition = {}
     for control in controls_used:
@@ -388,16 +419,10 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
         )
     # Omnibus
     contingency = pd.DataFrame(
-        {
-            cluster: [
-                int(((targets_col == gene) & (klass == CLASS_TARGETING) & in_cluster[cluster]).sum())
-                for gene in testable
-            ]
-            for cluster in clusters
-        },
+        {cluster: [int((_pert(gene) & in_cluster[cluster]).sum()) for gene in testable] for cluster in clusters},
         index=testable,
     )
-    omnibus = omnibus_test(contingency, ecfg.permutations, cfg.run.seed)
+    omnibus = omnibus_test(contingency, ecfg.permutations, cfg.run.seed) if testable else {}
     if omnibus:
         logger.info(
             "Omnibus association: chi2=%.0f (dof %d), permutation p=%.4g (%.0f%% of expected counts < 5)",
@@ -413,11 +438,11 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
     strata_unique = sorted(set(strat_values)) if stratified else []
 
     def _eval_target_enrich_std(gene: str) -> List[dict]:
-        tmask = (targets_col == gene) & (klass == CLASS_TARGETING)
+        tmask = _pert(gene)
         n_target = int(tmask.sum())
         gene_rows = []
         for control in controls_used:
-            rmask = _reference_mask(control, klass, targets_col, gene)
+            rmask = _ref(control, gene)
             n_ref = int(rmask.sum())
             for cluster in clusters:
                 cm = in_cluster[cluster]
@@ -467,16 +492,17 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
 
     results_nested = run_parallel(
         _eval_target_enrich_std,
-        testable,
+        testable + pseudo_targets,
         n_jobs=decision.n_jobs,
         blas_threads=cfg.compute.blas_threads_per_worker,
         backend=cfg.compute.cpu_parallel_backend,
     )
     rows: List[dict] = [item for sublist in results_nested for item in sublist]
+    real_rows, pseudo_rows = _split_pseudo_rows(rows, membership)
     return _finalize_enrichment_results(
         expr=expr,
         cfg=cfg,
-        table=pd.DataFrame(rows),
+        table=pd.DataFrame(real_rows),
         composition=composition,
         reference_composition=reference_composition,
         target_counts=target_counts,
@@ -487,7 +513,276 @@ def _test_cluster_enrichment_standard(expr: ad.AnnData, cfg: Config) -> Enrichme
         omnibus=omnibus,
         cluster_key=cluster_key,
         stratified=stratified,
+        membership=membership,
+        pseudo_table=pd.DataFrame(pseudo_rows),
     )
+
+
+# ===========================================================================
+# HIGH-MOI MEMBERSHIP: pseudo-target helpers and the aggregated implementation
+# ===========================================================================
+
+
+def _pseudo_target_list(membership, cfg: Config) -> List[str]:
+    """NTC guides with enough member cells to be tested like a target."""
+    if membership is None or not cfg.guides.high_moi.ntc_pseudo_targets:
+        return []
+    min_cells = cfg.enrichment.min_cells_per_target
+    counts = membership.pseudo_counts()
+    return sorted(counts[counts >= min_cells].index)
+
+
+def _split_pseudo_rows(rows: List[dict], membership) -> Tuple[List[dict], List[dict]]:
+    if membership is None:
+        return rows, []
+    real = [r for r in rows if not membership.is_pseudo(r["target_gene"])]
+    pseudo = [r for r in rows if membership.is_pseudo(r["target_gene"])]
+    return real, pseudo
+
+
+def _test_cluster_enrichment_membership_large(expr: ad.AnnData, cfg: Config, membership) -> EnrichmentResults:
+    """Aggregated implementation on the membership matrix (``high_moi`` mode, LARGE execution).
+
+    Same contingency tables as the STANDARD membership path, built once with
+    sparse products: perturbed = cells carrying the target; ``other`` = targeting
+    cells not carrying it; ``ntc`` = NTC-only cells (minus the pseudo-target's
+    own cells). Reference totals are counts of *cells*, never sums over target
+    rows, because a cell carries several targets.
+    """
+    ecfg = cfg.enrichment
+    obs = expr.obs
+    cluster_key = ecfg.cluster_key
+    logger.info("Cluster enrichment execution mode: LARGE-DATASET, high-MOI membership (aggregated contingency tables)")
+    if cluster_key not in obs.columns:
+        raise ValueError(f"enrichment.cluster_key={cluster_key!r} is not an obs column.")
+    clusters_all = obs[cluster_key].astype(str).to_numpy()
+    cluster_sizes = pd.Series(clusters_all).value_counts()
+    ordered_clusters = _cluster_order(clusters_all)
+    clusters = [c for c in ordered_clusters if cluster_sizes.get(c, 0) >= ecfg.min_cells_per_cluster]
+    if not clusters:
+        raise ValueError(f"No cluster has at least {ecfg.min_cells_per_cluster} cells.")
+    klass = obs[OBS_CLASS].astype(str).to_numpy()
+    targeting_mask = membership.targeting_mask
+    ntc_mask = klass == CLASS_NTC
+    total_targeting = int(targeting_mask.sum())
+    total_ntc = int(ntc_mask.sum())
+    target_counts = membership.counts
+    testable = sorted(target_counts[target_counts >= ecfg.min_cells_per_target].index)
+    skipped = pd.DataFrame(
+        [
+            {"target_gene": t, "n_cells": int(n), "reason": f"fewer than {ecfg.min_cells_per_target} assigned cells"}
+            for t, n in target_counts.items()
+            if n < ecfg.min_cells_per_target
+        ]
+    )
+    pseudo_targets = _pseudo_target_list(membership, cfg)
+    if not testable and not pseudo_targets:
+        return EnrichmentResults(
+            table=pd.DataFrame(),
+            composition=pd.DataFrame(),
+            reference_composition={},
+            effect_magnitude=pd.DataFrame(),
+            skipped=skipped,
+            cluster_key=cluster_key,
+            membership_aware=True,
+        )
+    if not testable:
+        logger.warning("No real target has enough cells for the enrichment test; testing the NTC pseudo-targets only.")
+    controls_used = []
+    for control in ecfg.controls:
+        n_ref = total_ntc if control == CONTROL_NTC else total_targeting
+        if n_ref < ecfg.min_reference_cells:
+            logger.warning("Control %r has only %d cells; dropping it.", control, n_ref)
+            continue
+        controls_used.append(control)
+    if not controls_used:
+        raise ValueError("No usable control group for enrichment.")
+    primary = ecfg.primary_control if ecfg.primary_control in controls_used else controls_used[0]
+    if primary != ecfg.primary_control:
+        logger.warning("Requested enrichment.primary_control %r unavailable; using %r.", ecfg.primary_control, primary)
+    stratified = False
+    strat_values = None
+    strata: List[str] = []
+    if ecfg.stratify_by:
+        if ecfg.stratify_by not in obs.columns:
+            raise ValueError(f"enrichment.stratify_by={ecfg.stratify_by!r} is not an obs column.")
+        strat_values = obs[ecfg.stratify_by].astype(str).to_numpy()
+        strata = sorted(set(strat_values))
+        if len(strata) >= 2:
+            stratified = True
+            logger.info("Large-data CMH stratification by %r (%d strata)", ecfg.stratify_by, len(strata))
+    # Aggregated counts (all clusters, so row totals are whole-cell counts; kept clusters selected for the tests)
+    tc_full = membership.counts_by(clusters_all, ordered_clusters)
+    pc_full = membership.pseudo_counts_by(clusters_all, ordered_clusters)
+    pc_targeting_full = membership.pseudo_counts_by(clusters_all, ordered_clusters, cell_mask=targeting_mask)
+    pseudo_n = pc_full.sum(axis=1)
+    pseudo_n_targeting = pc_targeting_full.sum(axis=1)
+    targeting_cluster_totals = pd.Series(clusters_all[targeting_mask]).value_counts().reindex(ordered_clusters, fill_value=0)
+    ntc_cluster_counts = pd.Series(clusters_all[ntc_mask]).value_counts().reindex(ordered_clusters, fill_value=0)
+    # Composition (per cent of each target's cells in each kept cluster)
+    composition = (
+        (tc_full.loc[testable, clusters].T / np.maximum(target_counts[testable].to_numpy(), 1) * 100.0).T
+        if testable
+        else pd.DataFrame(columns=clusters)
+    )
+    reference_composition: Dict[str, pd.Series] = {}
+    if CONTROL_NTC in controls_used:
+        reference_composition[CONTROL_NTC] = ntc_cluster_counts[clusters] / max(total_ntc, 1) * 100.0
+    if CONTROL_OTHER in controls_used:
+        reference_composition[CONTROL_OTHER] = targeting_cluster_totals[clusters] / max(total_targeting, 1) * 100.0
+    effective_permutations = min(int(ecfg.permutations), LARGE_DATASET_MAX_OMNIBUS_PERMUTATIONS)
+    omnibus = omnibus_test(tc_full.loc[testable, clusters], effective_permutations, cfg.run.seed) if testable else {}
+    if omnibus:
+        logger.info(
+            "Omnibus association: chi2=%.0f (dof %d), permutation p=%.4g (%.0f%% of expected counts < 5)",
+            omnibus["chi2"],
+            omnibus["dof"],
+            omnibus["p_permutation"],
+            omnibus["pct_expected_below_5"],
+        )
+    # Per-stratum aggregates
+    tsc: Dict[str, pd.DataFrame] = {}
+    psc: Dict[str, pd.DataFrame] = {}
+    psc_targeting: Dict[str, pd.DataFrame] = {}
+    strat_targeting_cluster: Dict[str, pd.Series] = {}
+    strat_targeting_total: Dict[str, int] = {}
+    strat_ntc_cluster: Dict[str, pd.Series] = {}
+    strat_ntc_total: Dict[str, int] = {}
+    if stratified:
+        for stratum in strata:
+            sm = strat_values == stratum
+            tsc[stratum] = membership.counts_by(clusters_all, ordered_clusters, cell_mask=sm)
+            psc[stratum] = membership.pseudo_counts_by(clusters_all, ordered_clusters, cell_mask=sm)
+            psc_targeting[stratum] = membership.pseudo_counts_by(clusters_all, ordered_clusters, cell_mask=sm & targeting_mask)
+            strat_targeting_cluster[stratum] = (
+                pd.Series(clusters_all[targeting_mask & sm]).value_counts().reindex(ordered_clusters, fill_value=0)
+            )
+            strat_targeting_total[stratum] = int((targeting_mask & sm).sum())
+            strat_ntc_cluster[stratum] = pd.Series(clusters_all[ntc_mask & sm]).value_counts().reindex(ordered_clusters, fill_value=0)
+            strat_ntc_total[stratum] = int((ntc_mask & sm).sum())
+    decision = resolve_stage_backend("enrichment", cfg, n_cells=expr.n_obs)
+    if cfg.compute.log_backend_decisions:
+        log_compute_decision(decision)
+
+    def _counts_for(gene: str, stratum: Optional[str]):
+        """(row_all, row_targeting, n_all, n_targeting) for a target or pseudo-target, overall or in one stratum."""
+        is_pseudo = membership.is_pseudo(gene)
+        if stratum is None:
+            if is_pseudo:
+                return pc_full.loc[gene], pc_targeting_full.loc[gene], int(pseudo_n[gene]), int(pseudo_n_targeting[gene])
+            row = tc_full.loc[gene]
+            n = int(target_counts[gene])
+            return row, row, n, n
+        if is_pseudo:
+            row, row_t = psc[stratum].loc[gene], psc_targeting[stratum].loc[gene]
+            return row, row_t, int(row.sum()), int(row_t.sum())
+        row = tsc[stratum].loc[gene]
+        n = int(row.sum())
+        return row, row, n, n
+
+    def _reference(control: str, stratum: Optional[str], cluster: str, row_all, row_targeting, n_all, n_targeting):
+        """(c_ref, n_ref): reference cells in the cluster and in total, excluding the focal cells."""
+        if stratum is None:
+            t_cluster, t_total = targeting_cluster_totals, total_targeting
+            n_cluster, n_total = ntc_cluster_counts, total_ntc
+        else:
+            t_cluster, t_total = strat_targeting_cluster[stratum], strat_targeting_total[stratum]
+            n_cluster, n_total = strat_ntc_cluster[stratum], strat_ntc_total[stratum]
+        if control == CONTROL_NTC:
+            # NTC-only member cells of a pseudo-target are the (all - targeting) part of its counts
+            c_ref = int(n_cluster[cluster]) - (int(row_all[cluster]) - int(row_targeting[cluster]))
+            n_ref = int(n_total) - (n_all - n_targeting)
+        else:
+            c_ref = int(t_cluster[cluster]) - int(row_targeting[cluster])
+            n_ref = int(t_total) - n_targeting
+        return c_ref, n_ref
+
+    def _eval_membership_large(gene: str) -> List[dict]:
+        row_all, row_t, n_target, n_target_t = _counts_for(gene, None)
+        gene_rows = []
+        for control in controls_used:
+            for cluster in clusters:
+                a = int(row_all[cluster])
+                b = n_target - a
+                c_ref, n_ref = _reference(control, None, cluster, row_all, row_t, n_target, n_target_t)
+                d = n_ref - c_ref
+                pct_t = 100.0 * a / max(n_target, 1)
+                pct_r = 100.0 * c_ref / max(n_ref, 1)
+                odds = _odds_ratio(a, b, c_ref, d, ecfg.odds_pseudocount)
+                if stratified:
+                    tables = []
+                    for stratum in strata:
+                        s_all, s_t, s_n, s_nt = _counts_for(gene, stratum)
+                        a_s = int(s_all[cluster])
+                        b_s = s_n - a_s
+                        c_s, ref_total_s = _reference(control, stratum, cluster, s_all, s_t, s_n, s_nt)
+                        tables.append(np.array([[a_s, b_s], [c_s, ref_total_s - c_s]], dtype=float))
+                    pooled_or, pval = _cmh_test(tables)
+                    if np.isfinite(pooled_or) and pooled_or > 0:
+                        odds = pooled_or
+                else:
+                    _, pval = fisher_exact([[a, b], [c_ref, d]])
+                gene_rows.append(
+                    {
+                        "target_gene": gene,
+                        "cluster": cluster,
+                        "control": control,
+                        "n_target_cells": n_target,
+                        "n_in_cluster": a,
+                        "pct_of_target": pct_t,
+                        "n_reference_cells": n_ref,
+                        "pct_of_reference": pct_r,
+                        "odds_ratio": odds,
+                        "log2_odds_ratio": (float(np.log2(odds)) if odds > 0 else np.nan),
+                        "direction": ("enriched" if pct_t > pct_r else "depleted"),
+                        "pval": float(pval),
+                        "low_power": (c_ref < ecfg.min_reference_cells),
+                    }
+                )
+        return gene_rows
+
+    results_nested = run_parallel(
+        _eval_membership_large,
+        testable + pseudo_targets,
+        n_jobs=decision.n_jobs,
+        blas_threads=cfg.compute.blas_threads_per_worker,
+        backend=cfg.compute.cpu_parallel_backend,
+    )
+    rows: List[dict] = [item for sublist in results_nested for item in sublist]
+    real_rows, pseudo_rows = _split_pseudo_rows(rows, membership)
+    return _finalize_enrichment_results(
+        expr=expr,
+        cfg=cfg,
+        table=pd.DataFrame(real_rows),
+        composition=composition,
+        reference_composition=reference_composition,
+        target_counts=target_counts,
+        testable=testable,
+        controls_used=controls_used,
+        primary=primary,
+        skipped=skipped,
+        omnibus=omnibus,
+        cluster_key=cluster_key,
+        stratified=stratified,
+        membership=membership,
+        pseudo_table=pd.DataFrame(pseudo_rows),
+    )
+
+
+def _guide_concordance_membership(
+    expr: ad.AnnData, cfg: Config, membership, gene: str, cluster_mask: np.ndarray, ref_fraction: float, min_cells: int, direction: str
+) -> Tuple[int, int]:
+    """Guide concordance from the guide membership matrix (several guides per cell)."""
+    tested = concordant = 0
+    for _, idx in membership.guide_members(expr, cfg, gene).items():
+        if idx.size < min_cells:
+            continue
+        tested += 1
+        frac = float(cluster_mask[idx].mean())
+        agrees = frac < ref_fraction if direction == "depleted" else frac > ref_fraction
+        if agrees:
+            concordant += 1
+    return concordant, tested
 
 
 # ===========================================================================
@@ -803,10 +1098,56 @@ def _finalize_enrichment_results(
     omnibus: Dict[str, float],
     cluster_key: str,
     stratified: bool,
+    membership=None,
+    pseudo_table: Optional[pd.DataFrame] = None,
 ) -> EnrichmentResults:
     """Shared FDR, concordance and effect summaries for both execution modes."""
     ecfg = cfg.enrichment
     obs = expr.obs
+    membership_aware = membership is not None
+    # FDR (real targets)
+    if not table.empty:
+        table["fdr"] = np.nan
+        for control in controls_used:
+            mask = table["control"] == control
+            table.loc[mask, "fdr"] = benjamini_hochberg(table.loc[mask, "pval"].to_numpy())
+        table["significant"] = (table["fdr"] < ecfg.fdr_alpha) & (table["control"] == primary)
+    # Pseudo-targets (high-MOI): same tests, own BH family, empirical false-positive rate. Processed before the
+    # empty-real-table return so a pseudo-only run keeps its negative-control results.
+    pseudo_summary: Dict[str, float] = {}
+    if pseudo_table is None:
+        pseudo_table = pd.DataFrame()
+    if not pseudo_table.empty:
+        pseudo_table = pseudo_table.copy()
+        pseudo_table["fdr"] = np.nan
+        for control in controls_used:
+            mask = pseudo_table["control"] == control
+            pseudo_table.loc[mask, "fdr"] = benjamini_hochberg(pseudo_table.loc[mask, "pval"].to_numpy())
+        pseudo_table["significant"] = (pseudo_table["fdr"] < ecfg.fdr_alpha) & (pseudo_table["control"] == primary)
+        pp = pseudo_table[pseudo_table["control"] == primary]
+        rp = table[table["control"] == primary] if not table.empty else pd.DataFrame(columns=["significant"])
+        pseudo_summary = {
+            "n_pseudo_targets": int(pp["target_gene"].nunique()),
+            "n_pseudo_tests": int(len(pp)),
+            "n_pseudo_significant": int(pp["significant"].sum()),
+            "pseudo_fpr_pct": float(100.0 * pp["significant"].mean()) if len(pp) else float("nan"),
+            "n_pseudo_targets_with_hit": int(pp.loc[pp["significant"], "target_gene"].nunique()),
+            "pseudo_nominal_pct_below_alpha": float(100.0 * (pp["pval"] < ecfg.fdr_alpha).mean()) if len(pp) else float("nan"),
+            "n_real_tests": int(len(rp)),
+            "n_real_significant": int(rp["significant"].sum()),
+            "real_hit_rate_pct": float(100.0 * rp["significant"].mean()) if len(rp) else float("nan"),
+        }
+        pseudo_table = pseudo_table.sort_values(["significant", "pval"], ascending=[False, True]).reset_index(drop=True)
+        logger.info(
+            "Enrichment negative controls: %d NTC pseudo-target(s) x %d cluster(s) -> %d significant of %d tests (%.2f%%; "
+            "real targets: %.2f%%)",
+            pseudo_summary["n_pseudo_targets"],
+            int(pp["cluster"].nunique()),
+            pseudo_summary["n_pseudo_significant"],
+            pseudo_summary["n_pseudo_tests"],
+            pseudo_summary["pseudo_fpr_pct"],
+            pseudo_summary["real_hit_rate_pct"],
+        )
     if table.empty:
         return EnrichmentResults(
             table=table,
@@ -820,17 +1161,31 @@ def _finalize_enrichment_results(
             cluster_key=cluster_key,
             stratified=stratified,
             stratify_by=(ecfg.stratify_by if stratified else None),
+            membership_aware=membership_aware,
+            pseudo_table=pseudo_table,
+            pseudo_summary=pseudo_summary,
         )
-    # FDR
-    table["fdr"] = np.nan
-    for control in controls_used:
-        mask = table["control"] == control
-        table.loc[mask, "fdr"] = benjamini_hochberg(table.loc[mask, "pval"].to_numpy())
-    table["significant"] = (table["fdr"] < ecfg.fdr_alpha) & (table["control"] == primary)
     # Guide concordance only for significant pairs
     table["guides_concordant"] = np.nan
     table["guides_tested"] = np.nan
-    if ecfg.guide_concordance and OBS_GUIDE in obs.columns:
+    if ecfg.guide_concordance and membership_aware:
+        clusters_all = obs[cluster_key].astype(str).to_numpy()
+        for idx in table.index[table["significant"]]:
+            gene = table.at[idx, "target_gene"]
+            cluster_mask = clusters_all == str(table.at[idx, "cluster"])
+            conc, tested = _guide_concordance_membership(
+                expr,
+                cfg,
+                membership,
+                gene,
+                cluster_mask,
+                table.at[idx, "pct_of_reference"] / 100.0,
+                ecfg.min_cells_per_guide,
+                str(table.at[idx, "direction"]),
+            )
+            table.at[idx, "guides_concordant"] = conc
+            table.at[idx, "guides_tested"] = tested
+    elif ecfg.guide_concordance and OBS_GUIDE in obs.columns:
         # Only materialize the four columns required by guide concordance.
         obs_view = obs[[OBS_GUIDE, OBS_TARGET, OBS_CLASS, cluster_key]]
         for idx in table.index[table["significant"]]:
@@ -881,7 +1236,7 @@ def _finalize_enrichment_results(
         composition.shape[1],
         n_hits,
         ecfg.fdr_alpha,
-        CONTROL_LABELS[primary],
+        (CONTROL_LABELS_MEMBERSHIP if membership_aware else CONTROL_LABELS)[primary],
     )
     return EnrichmentResults(
         table=table,
@@ -895,6 +1250,9 @@ def _finalize_enrichment_results(
         cluster_key=cluster_key,
         stratified=stratified,
         stratify_by=(ecfg.stratify_by if stratified else None),
+        membership_aware=membership_aware,
+        pseudo_table=pseudo_table,
+        pseudo_summary=pseudo_summary,
     )
 
 
@@ -923,13 +1281,26 @@ def test_cluster_enrichment(expr: ad.AnnData, cfg: Config) -> EnrichmentResults:
         raise ValueError(f"{OBS_TARGET!r} is missing from obs.")
     if OBS_CLASS not in obs.columns:
         raise ValueError(f"{OBS_CLASS!r} is missing from obs.")
-    targeting = obs[OBS_CLASS].astype(str) == CLASS_TARGETING
-    target_counts = obs.loc[targeting, OBS_TARGET].astype(str).value_counts()
+    from .high_moi import membership_index
+
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        target_counts = membership.counts
+    else:
+        targeting = obs[OBS_CLASS].astype(str) == CLASS_TARGETING
+        target_counts = obs.loc[targeting, OBS_TARGET].astype(str).value_counts()
     n_testable_targets = int((target_counts >= ecfg.min_cells_per_target).sum())
     large_mode = cfg.use_large_mode(expr.n_obs, n_perturbations=n_testable_targets)
-    logger.info("Enrichment input: %d cells, %d testable targets", expr.n_obs, n_testable_targets)
+    logger.info(
+        "Enrichment input: %d cells, %d testable targets%s",
+        expr.n_obs,
+        n_testable_targets,
+        " (high-MOI membership)" if membership is not None else "",
+    )
     if large_mode:
         logger.info("Large-dataset enrichment mode selected (%d cells, %d targets)", expr.n_obs, n_testable_targets)
+        if membership is not None:
+            return _test_cluster_enrichment_membership_large(expr, cfg, membership)
         return _test_cluster_enrichment_large(expr, cfg)
     logger.info("Standard enrichment mode selected")
     return _test_cluster_enrichment_standard(expr, cfg)

@@ -73,6 +73,10 @@ class DistanceResults:
     n_control_cells: int = 0
     representation: str = "X_pca"
     note: str = ""
+    #: High-MOI mode: sets come from the membership matrix.
+    membership_aware: bool = False
+    #: High-MOI mode: NTC pseudo-targets (``NTC:<guide>``) tested like targets, own BH family.
+    pseudo_table: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     @property
     def significant_hits(self) -> pd.DataFrame:
@@ -486,12 +490,23 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
     # Pre-sample control cells reproducibly
     rng_ctrl = np.random.default_rng(dcfg.random_seed)
     ctrl_indices_sampled = _sample_cell_indices(ctrl_indices_all, dcfg.max_control_cells, rng_ctrl, strata=strata)
-    # The 'other' control is every targeting cell, so each target's own cells must be
-    # dropped from the control sample inside the worker (as perturbation.py does).
-    exclude_self = ctrl_choice == CONTROL_OTHER
-    # Identify all targeting perturbations
+    # Identify all targeting perturbations (membership in high-MOI mode: perturbed = cells carrying the target)
+    from .high_moi import membership_index
+
+    membership = membership_index(expr, cfg)
     targeting_mask = klass == CLASS_TARGETING
-    all_targets = sorted(set(targets_col[targeting_mask]))
+    pseudo_targets: List[str] = []
+    if membership is not None:
+        all_targets = list(membership.targets)
+        if cfg.guides.high_moi.ntc_pseudo_targets:
+            pseudo_targets = [p for p in membership.pseudo_targets if membership.indices(p).size >= dcfg.min_cells]
+            all_targets += pseudo_targets
+    else:
+        all_targets = sorted(set(targets_col[targeting_mask]))
+    # The 'other' control is every targeting cell, so each target's own cells must be dropped from the control
+    # sample inside the worker (as perturbation.py does). In membership mode this applies to every control arm:
+    # an NTC pseudo-target's NTC-only member cells would otherwise sit in both samples of the 'ntc' arm.
+    exclude_self = ctrl_choice == CONTROL_OTHER or membership is not None
     decision = resolve_stage_backend("distance", cfg, n_cells=expr.n_obs)
     if cfg.compute.log_backend_decisions:
         log_compute_decision(decision)
@@ -503,9 +518,12 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
         decision.n_jobs,
         dcfg.n_permutations,
     )
-    targeting_indices_dict: Dict[str, np.ndarray] = {
-        target: np.flatnonzero((targets_col == target) & targeting_mask) for target in all_targets
-    }
+    if membership is not None:
+        targeting_indices_dict: Dict[str, np.ndarray] = {target: membership.indices(target) for target in all_targets}
+    else:
+        targeting_indices_dict = {
+            target: np.flatnonzero((targets_col == target) & targeting_mask) for target in all_targets
+        }
     # Setup shared array buffer for worker processes
     shm_buffer: Optional[SharedArrayBuffer] = None
     worker_embedding: np.ndarray = embedding
@@ -561,15 +579,24 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
             n_control_cells=len(ctrl_indices_sampled),
             representation=rep_name,
             note="No targets met min_cells threshold.",
+            membership_aware=membership is not None,
         )
     table = pd.DataFrame(rows)
-    # Benjamini-Hochberg FDR correction
-    table["fdr"] = benjamini_hochberg(table["pvalue"].to_numpy())
-    table["significant"] = table["fdr"] < dcfg.fdr_threshold
+    # Pseudo-targets (high-MOI negative controls) form their own BH family and never enter the real table.
+    pseudo_set = set(pseudo_targets)
+    is_pseudo = table["target_gene"].astype(str).isin(pseudo_set).to_numpy() if pseudo_set else np.zeros(len(table), bool)
+    pseudo_table = table[is_pseudo].copy()
+    table = table[~is_pseudo].copy()
+    skipped = [sk for sk in skipped if str(sk.get("target_gene")) not in pseudo_set]
+    for frame in (table, pseudo_table):
+        if len(frame):
+            frame["fdr"] = benjamini_hochberg(frame["pvalue"].to_numpy())
+            frame["significant"] = frame["fdr"] < dcfg.fdr_threshold
     # Sort descending by energy distance
     table = table.sort_values("energy_distance", ascending=False).reset_index(drop=True)
+    pseudo_table = pseudo_table.sort_values("energy_distance", ascending=False).reset_index(drop=True)
     skipped_df = pd.DataFrame(skipped)
-    n_sig = int(table["significant"].sum())
+    n_sig = int(table["significant"].sum()) if len(table) else 0
     logger.info(
         "Perturbation Distance complete: %d targets tested (%d significant at FDR < %.2f), %d skipped",
         len(table),
@@ -577,6 +604,15 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
         dcfg.fdr_threshold,
         len(skipped_df),
     )
+    if len(pseudo_table):
+        logger.info(
+            "Perturbation Distance negative controls: %d NTC pseudo-target(s), %d significant at FDR < %.2f (%.1f%%; real targets %.1f%%)",
+            len(pseudo_table),
+            int(pseudo_table["significant"].sum()),
+            dcfg.fdr_threshold,
+            100.0 * pseudo_table["significant"].mean(),
+            100.0 * table["significant"].mean() if len(table) else float("nan"),
+        )
     return DistanceResults(
         table=table,
         skipped=skipped_df,
@@ -585,6 +621,8 @@ def compute_perturbation_distance(expr: ad.AnnData, cfg: Config) -> Optional[Dis
         control_used=ctrl_choice,
         n_control_cells=len(ctrl_indices_sampled),
         representation=rep_name,
+        membership_aware=membership is not None,
+        pseudo_table=pseudo_table,
     )
 
 
@@ -671,10 +709,17 @@ def compute_distance_space(expr: ad.AnnData, cfg: Config) -> Optional[DistanceSp
     rep_name = dscfg.representation
     embedding = _resolve_representation(expr, rep_name)
     obs = expr.obs
+    from .high_moi import membership_index
+
     targets_col = obs[OBS_TARGET].astype(str).to_numpy()
     klass = obs[OBS_CLASS].astype(str).to_numpy()
     targeting_mask = klass == CLASS_TARGETING
-    all_targets = sorted(set(targets_col[targeting_mask]))
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        # Shared cells between targets inflate pairwise similarity in a high-MOI design; said in the report.
+        all_targets = list(membership.targets)
+    else:
+        all_targets = sorted(set(targets_col[targeting_mask]))
     # Strata for sampling
     strata = None
     if "lane_id" in obs.columns:
@@ -684,7 +729,7 @@ def compute_distance_space(expr: ad.AnnData, cfg: Config) -> Optional[DistanceSp
     target_samples: Dict[str, np.ndarray] = {}
     skipped: List[dict] = []
     for i, target in enumerate(all_targets):
-        pert_mask = (targets_col == target) & targeting_mask
+        pert_mask = membership.mask(target) if membership is not None else (targets_col == target) & targeting_mask
         n_pert = int(pert_mask.sum())
         if n_pert < dscfg.min_cells:
             skipped.append(

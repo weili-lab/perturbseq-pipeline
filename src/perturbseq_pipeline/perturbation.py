@@ -75,6 +75,11 @@ CONTROL_NTC = "ntc"
 CONTROL_OTHER = "other"
 
 CONTROL_LABELS = {CONTROL_NTC: "non-targeting control cells", CONTROL_OTHER: "cells assigned to other target genes"}
+#: Labels when the sets come from the high-MOI membership matrix.
+CONTROL_LABELS_MEMBERSHIP = {
+    CONTROL_NTC: "non-targeting-only control cells",
+    CONTROL_OTHER: "targeting cells not carrying the target (membership)",
+}
 
 
 # Numerical settings
@@ -102,6 +107,12 @@ class PerturbationResults:
     #: Targets that could not be tested.
     skipped: pd.DataFrame
     n_control_cells: Dict[str, int]
+    #: High-MOI mode: sets come from the membership matrix (use CONTROL_LABELS_MEMBERSHIP).
+    membership_aware: bool = False
+
+    @property
+    def control_labels(self) -> Dict[str, str]:
+        return CONTROL_LABELS_MEMBERSHIP if self.membership_aware else CONTROL_LABELS
 
     @property
     def hits(self) -> pd.DataFrame:
@@ -230,11 +241,17 @@ def benjamini_hochberg(pvals: Sequence[float]) -> np.ndarray:
 # ===========================================================================
 
 
-def _prepare_analysis(
-    expr: ad.AnnData, cfg: Config
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, int], List[str], str, List[str]]:
-    """Prepare target/control metadata shared by both execution modes."""
+def _prepare_analysis(expr: ad.AnnData, cfg: Config) -> Tuple:
+    """Prepare target/control metadata shared by both execution modes.
+
+    In ``high_moi`` mode the last element is a :class:`~.high_moi.MembershipIndex`
+    (perturbed = cells carrying the target, ``other`` = targeting cells not
+    carrying it); otherwise it is ``None`` and the label-based sets are used.
+    """
+    from .high_moi import membership_index
+
     pcfg = cfg.perturbation
+    membership = membership_index(expr, cfg)
     obs = expr.obs
     targets_col = obs[OBS_TARGET].astype(str).to_numpy()
     klass = obs[OBS_CLASS].astype(str).to_numpy()
@@ -261,8 +278,11 @@ def _prepare_analysis(
     primary = pcfg.primary_control if pcfg.primary_control in controls_used else controls_used[0]
     if primary != pcfg.primary_control:
         logger.warning("Requested primary control %r unavailable; using %r.", pcfg.primary_control, primary)
-    all_targets = sorted(set(targets_col[klass == CLASS_TARGETING]))
-    return (targets_col, klass, base, n_control_cells, controls_used, primary, all_targets)
+    if membership is not None:
+        all_targets = list(membership.targets)
+    else:
+        all_targets = sorted(set(targets_col[klass == CLASS_TARGETING]))
+    return (targets_col, klass, base, n_control_cells, controls_used, primary, all_targets, membership)
 
 
 # ===========================================================================
@@ -278,7 +298,9 @@ def _test_all_targets_standard(expr: ad.AnnData, cfg: Config) -> PerturbationRes
     """
     logger.info("Perturbation-strength execution mode: STANDARD (full expression vectors)")
     pcfg = cfg.perturbation
-    (targets_col, klass, base, n_control_cells, controls_used, primary, all_targets) = _prepare_analysis(expr, cfg)
+    (targets_col, klass, base, n_control_cells, controls_used, primary, all_targets, membership) = _prepare_analysis(
+        expr, cfg
+    )
     decision = resolve_stage_backend("perturbation", cfg, n_cells=expr.n_obs)
     if cfg.compute.log_backend_decisions:
         log_compute_decision(decision)
@@ -286,8 +308,18 @@ def _test_all_targets_standard(expr: ad.AnnData, cfg: Config) -> PerturbationRes
     layer = _expression_layer(expr)
     var_dict = {g: i for i, g in enumerate(expr.var_names)}
 
+    def _perturbed_mask(gene: str) -> np.ndarray:
+        if membership is not None:
+            return membership.mask(gene)
+        return (targets_col == gene) & (klass == CLASS_TARGETING)
+
+    def _ctrl_mask(control: str, gene: str) -> np.ndarray:
+        if membership is not None and control == CONTROL_OTHER:
+            return membership.other_mask(gene)
+        return _control_mask_for_target(control, base, targets_col, gene)
+
     def _eval_target_std(gene: str) -> Tuple[Optional[dict], Optional[dict]]:
-        pert_mask = (targets_col == gene) & (klass == CLASS_TARGETING)
+        pert_mask = _perturbed_mask(gene)
         n_pert = int(pert_mask.sum())
         if gene not in measured:
             return None, {
@@ -306,7 +338,7 @@ def _test_all_targets_standard(expr: ad.AnnData, cfg: Config) -> PerturbationRes
         if sparse.issparse(col):
             col = col.toarray()
         values = np.asarray(col).ravel().astype(np.float64)
-        primary_mask = _control_mask_for_target(primary, base, targets_col, gene)
+        primary_mask = _ctrl_mask(primary, gene)
         pct_expressing = float(100 * np.mean(values[primary_mask] > 0)) if primary_mask.any() else 0.0
         if pct_expressing < pcfg.min_pct_expressing_control:
             return None, {
@@ -320,7 +352,7 @@ def _test_all_targets_standard(expr: ad.AnnData, cfg: Config) -> PerturbationRes
             }
         row: Dict[str, object] = {"target_gene": gene, "n_perturbed": n_pert}
         for control in controls_used:
-            cmask = _control_mask_for_target(control, base, targets_col, gene)
+            cmask = _ctrl_mask(control, gene)
             n_ctrl = int(cmask.sum())
             row[f"n_control_{control}"] = n_ctrl
             if n_ctrl < pcfg.min_control_cells:
@@ -348,6 +380,7 @@ def _test_all_targets_standard(expr: ad.AnnData, cfg: Config) -> PerturbationRes
         n_control_cells=n_control_cells,
         all_targets=all_targets,
         cfg=cfg,
+        membership_aware=membership is not None,
     )
 
 
@@ -372,7 +405,9 @@ def _test_all_targets_large(expr: ad.AnnData, cfg: Config) -> PerturbationResult
         "(indexed expression extraction + sampled distributional controls)"
     )
     pcfg = cfg.perturbation
-    (targets_col, klass, base, n_control_cells, controls_used, primary, all_targets) = _prepare_analysis(expr, cfg)
+    (targets_col, klass, base, n_control_cells, controls_used, primary, all_targets, membership) = _prepare_analysis(
+        expr, cfg
+    )
     # Target metadata
     measured_index = {gene: idx for idx, gene in enumerate(expr.var_names)}
     targeting_indices = np.flatnonzero(klass == CLASS_TARGETING).astype(np.int64, copy=False)
@@ -381,12 +416,17 @@ def _test_all_targets_large(expr: ad.AnnData, cfg: Config) -> PerturbationResult
     #
     # This prevents allocating a new 2.6-million-element Boolean mask for every
     # target.
-    targeting_frame = pd.DataFrame({"target": (targets_col[targeting_indices]), "cell_index": (targeting_indices)})
-    target_indices: Dict[str, np.ndarray] = {
-        target: group["cell_index"].to_numpy(dtype=np.int64, copy=True)
-        for target, group in targeting_frame.groupby("target", observed=True, sort=False)
-    }
-    del targeting_frame
+    if membership is not None:
+        target_indices: Dict[str, np.ndarray] = {target: membership.indices(target) for target in all_targets}
+    else:
+        targeting_frame = pd.DataFrame(
+            {"target": (targets_col[targeting_indices]), "cell_index": (targeting_indices)}
+        )
+        target_indices = {
+            target: group["cell_index"].to_numpy(dtype=np.int64, copy=True)
+            for target, group in targeting_frame.groupby("target", observed=True, sort=False)
+        }
+        del targeting_frame
     rng = np.random.default_rng(cfg.run.seed)
     # Reusable reference populations
     ntc_test_indices = _sample_reference_indices(ntc_indices, LARGE_DATASET_MAX_TEST_CONTROLS, rng)
@@ -397,6 +437,16 @@ def _test_all_targets_large(expr: ad.AnnData, cfg: Config) -> PerturbationResult
     # every gene.
     other_reference_indices = _sample_reference_indices(targeting_indices, LARGE_DATASET_MAX_TEST_CONTROLS, rng)
     other_reference_targets = targets_col[other_reference_indices]
+
+    def _other_keep(gene: str) -> np.ndarray:
+        """Reference cells not carrying ``gene`` (membership) / not labelled ``gene`` (legacy).
+
+        The membership branch compares the (at most 100k) sampled indices with the
+        sparse member indices directly; no n_cells-sized mask is built per target.
+        """
+        if membership is not None:
+            return ~np.isin(other_reference_indices, membership.indices(gene), assume_unique=True)
+        return other_reference_targets != gene
     logger.info(
         "Large-data statistical references: %d/%d NTC cells and %d/%d targeting cells",
         len(ntc_test_indices),
@@ -428,7 +478,7 @@ def _test_all_targets_large(expr: ad.AnnData, cfg: Config) -> PerturbationResult
         if primary == CONTROL_NTC:
             primary_indices = ntc_test_indices
         else:
-            primary_indices = other_reference_indices[other_reference_targets != gene]
+            primary_indices = other_reference_indices[_other_keep(gene)]
         if primary_indices.size < pcfg.min_control_cells:
             return None, {
                 "target_gene": gene,
@@ -453,7 +503,7 @@ def _test_all_targets_large(expr: ad.AnnData, cfg: Config) -> PerturbationResult
                 ctrl_indices = ntc_test_indices
                 n_ctrl_full = int(ntc_indices.size)
             else:
-                keep = other_reference_targets != gene
+                keep = _other_keep(gene)
                 ctrl_indices = other_reference_indices[keep]
                 n_ctrl_full = int(targeting_indices.size - n_pert)
             n_ctrl_test = int(ctrl_indices.size)
@@ -488,6 +538,7 @@ def _test_all_targets_large(expr: ad.AnnData, cfg: Config) -> PerturbationResult
         n_control_cells=n_control_cells,
         all_targets=all_targets,
         cfg=cfg,
+        membership_aware=membership is not None,
     )
 
 
@@ -520,9 +571,11 @@ def _finalize_results(
     n_control_cells: Dict[str, int],
     all_targets: List[str],
     cfg: Config,
+    membership_aware: bool = False,
 ) -> PerturbationResults:
     """Shared BH-FDR, hit calling and ranking."""
     pcfg = cfg.perturbation
+    labels = CONTROL_LABELS_MEMBERSHIP if membership_aware else CONTROL_LABELS
     if not rows:
         logger.warning("No target gene was testable; returning an empty result table.")
         return PerturbationResults(
@@ -531,6 +584,7 @@ def _finalize_results(
             primary_control=primary,
             skipped=pd.DataFrame(skipped),
             n_control_cells=n_control_cells,
+            membership_aware=membership_aware,
         )
     table = pd.DataFrame(rows)
     for control in controls_used:
@@ -556,7 +610,7 @@ def _finalize_results(
         len(all_targets),
         n_hits,
         pcfg.fdr_alpha,
-        CONTROL_LABELS[primary],
+        labels[primary],
     )
     if skipped:
         logger.info("%d target(s) skipped; see the skipped table.", len(skipped))
@@ -566,6 +620,7 @@ def _finalize_results(
         primary_control=primary,
         skipped=pd.DataFrame(skipped),
         n_control_cells=n_control_cells,
+        membership_aware=membership_aware,
     )
 
 
@@ -582,13 +637,24 @@ def test_all_targets(expr: ad.AnnData, cfg: Config) -> PerturbationResults:
     Million-cell/high-target-count datasets automatically use indexed
     extraction and sampled statistical control populations.
     """
+    from .high_moi import membership_index
+
     pcfg = cfg.perturbation
-    klass = expr.obs[OBS_CLASS].astype(str)
-    targets = expr.obs.loc[klass == CLASS_TARGETING, OBS_TARGET].astype(str)
-    target_counts = targets.value_counts()
+    membership = membership_index(expr, cfg)
+    if membership is not None:
+        target_counts = membership.counts
+    else:
+        klass = expr.obs[OBS_CLASS].astype(str)
+        targets = expr.obs.loc[klass == CLASS_TARGETING, OBS_TARGET].astype(str)
+        target_counts = targets.value_counts()
     n_testable_targets = int((target_counts >= pcfg.min_cells_per_target).sum())
     large_mode = cfg.use_large_mode(expr.n_obs, n_perturbations=n_testable_targets)
-    logger.info("Perturbation-strength input: %d cells, %d testable targets", expr.n_obs, n_testable_targets)
+    logger.info(
+        "Perturbation-strength input: %d cells, %d testable targets%s",
+        expr.n_obs,
+        n_testable_targets,
+        " (high-MOI membership: perturbed = cells carrying the target)" if membership is not None else "",
+    )
     if large_mode:
         logger.info(
             "Large-dataset perturbation-strength mode selected (%d cells, %d targets)", expr.n_obs, n_testable_targets

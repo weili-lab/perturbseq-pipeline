@@ -352,7 +352,7 @@ def test_high_moi_end_to_end(tmp_path):
     html = (outdir / cfg.output.report_name).read_text()
     assert "Membership calling summary" in html and "Cells with &gt;= 1 called guide" in html
     assert "Rank-ordered guide UMI profile" in html and "median_umi" in html
-    assert "PRIMARY (highest-UMI) target only" in report  # the QC warning is listed in the report
+    assert "PRIMARY (highest-UMI) target" in report  # the QC warning is listed in the report
     back = ad.read_h5ad(outdir / cfg.output.h5ad_name)
     assert hm.membership_obsm_key in back.obsm and UNS_TARGETS in back.uns
     guide_table = pd.read_csv(outdir / f"{cfg.run.name}_guide_barcodes.txt", sep="\t")
