@@ -54,6 +54,7 @@ at a few UMIs, and the threshold should fall in the gap.
 | `obsm['guide_membership']` | cells x guides, sparse CSR int8; 1 = the guide is called in the cell |
 | `uns['membership_targets']`, `uns['membership_guides']` | column names of the two matrices |
 | `obs['n_guides_assigned']`, `obs['n_targets_assigned']` | row sums (targets exclude the NTC column) |
+| `obs['n_guides_called']` | guides passing the call before the `max_guides_per_cell` gate (over-cap cells keep their real count here; their membership rows are cleared) |
 | `obs['is_ntc_only']` | at least one NTC guide and no targeting guide |
 | `obs['perturbation_class']` | `targeting` / `non-targeting` (NTC-only) / `ambiguous` (above the cap) / `unassigned` (no called guide) |
 | `obs['target_gene']`, `obs['guide_id']` | **primary label**: the cell's highest-UMI targeting guide (NTC guide for NTC-only cells) |

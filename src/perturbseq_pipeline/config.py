@@ -1309,6 +1309,12 @@ class Config:
             raise ValueError("guides.high_moi obsm keys must be non-empty")
         if hm.membership_obsm_key == hm.guide_membership_obsm_key:
             raise ValueError("guides.high_moi.membership_obsm_key and guide_membership_obsm_key must differ")
+        if self.output.guide_obsm_key in (hm.membership_obsm_key, hm.guide_membership_obsm_key):
+            raise ValueError(
+                "guides.high_moi membership obsm keys must differ from output.guide_obsm_key "
+                f"({self.output.guide_obsm_key!r}): the raw guide counts merged into the processed h5ad would "
+                "overwrite the membership matrix"
+            )
         mp = guide_cfg.multiplet
         if mp.expected_guides_per_cell is not None and mp.expected_guides_per_cell < 1:
             raise ValueError("guides.multiplet.expected_guides_per_cell must be >= 1 or null")

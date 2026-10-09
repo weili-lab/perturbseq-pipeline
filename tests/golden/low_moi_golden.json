@@ -9,6 +9,7 @@
   "runs": {
     "dual_guide_pair": {
       "obs": "d6c41eca5c33d46fb2892e1cc48098c7f81037e0510a828280dd856d2b75c6ae",
+      "report_md": "40c39bcf2ca425f134f79be85e0de589e20881bf4fdaf073ec0da3313c3d4e80",
       "structure": "66d410d8ccedb72830127ebd7bee8cbf6e4826c5711d69bfa98318ff2d5c31b4",
       "tables/assignment_per_lane": "ccc28a6e02c8470e25864899f513092494feba7cdc6d4ea30812573566fa7ef3",
       "tables/cell_counts_before_after": "d440ccfd0c639ab74ded9a30d1d354bcdd5d64d1f9be071e557cee7344a20179",
@@ -44,6 +45,7 @@
     },
     "single_guide": {
       "obs": "5328a3cf7d8c569b6b7f8f16b5e3d32f545c2ef6cb1af5896f9edd0705c40c44",
+      "report_md": "ced80ceb44a384c1ba26770fa2bca1b841e31b1ed280eebe258554ffd1ef0943",
       "structure": "94cf93858368076eff85c4d68f9e8bd088dfb9941986a3787d72761252841913",
       "tables/assignment_per_lane": "d4c68f85cb362a65e1b87f7555ab47f5d8b2e09575708e39f92efc9e7ca8a8e9",
       "tables/clusters": "fe324d73652c9147719af847159ab8ee9194f59ed5091609b833972b1f7977b2",

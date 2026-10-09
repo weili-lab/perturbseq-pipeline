@@ -509,7 +509,7 @@ output:
 | `obs['guide_id']`, `top_guide_count`, `second_guide_count` | guide-call diagnostics |
 | `obs['guide_assignment_mode']`, `pair_assignment_status`, `guide_A_*`, `guide_C_*` | pair-mode call and per-slot detail |
 | `obsm['perturbation_membership']`, `obsm['guide_membership']`, `uns['membership_targets']` | high-MOI mode: cells x targets and cells x guides membership (sparse, 0/1) and the target column names |
-| `obs['n_guides_assigned']`, `n_targets_assigned`, `is_ntc_only` | high-MOI mode: membership counts per cell |
+| `obs['n_guides_assigned']`, `n_targets_assigned`, `n_guides_called`, `is_ntc_only` | high-MOI mode: membership counts per cell (`n_guides_called` = before the per-cell cap) |
 | `obs['total_guide_counts']`, `n_guides_detected` | guide depth and MOI |
 | `obs['leiden']`, `obsm['X_umap']` | clustering and embedding |
 | `obs['ps_score']`, `lochness_self`, `obsm['X_lda_umap']` | per-cell scores from the optional stages |

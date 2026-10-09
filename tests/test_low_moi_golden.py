@@ -13,7 +13,10 @@ that those tests do not see.
 Canonicalisation: columns sorted by name, floats formatted with 5 significant
 digits, rows sorted lexicographically; so the digests are insensitive to row
 order from parallel workers and to last-digit noise, but sensitive to any
-change of a value, a column or a cell label.
+change of a value, a column or a cell label. The Markdown report (warnings,
+QC text, section text and tables) is hashed too, after neutralising the
+run-specific parts: timestamp, absolute paths, git commit, command line,
+package versions and stage timings.
 
 Regenerate the golden file (only when a change to the legacy output is
 intended, or after a dependency upgrade changes clustering)::
@@ -29,6 +32,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import sys
 from pathlib import Path
 from typing import Dict
@@ -83,6 +87,38 @@ def _digest_tables(outdir: Path) -> Dict[str, str]:
         df = pd.read_csv(path, low_memory=False)
         digests[f"tables/{path.stem}"] = _sha(_canon_frame(df))
     return digests
+
+
+_REPORT_DROP_PREFIXES = ("| Git branch / commit |", "| Command |", "| Compute |", "| SLURM job |", "| Pipeline version |")
+
+
+def _canon_report(text: str, root: Path) -> str:
+    """Neutralise the run-specific parts of report.md, keep every other line verbatim."""
+    out = []
+    skipping_versions = False
+    for line in text.splitlines():
+        if skipping_versions:
+            if not line.strip():
+                skipping_versions = False
+            continue
+        if line.startswith("- package versions:"):
+            skipping_versions = True
+            continue
+        if line.startswith(_REPORT_DROP_PREFIXES):
+            continue
+        line = line.replace(str(root), "ROOT")
+        line = re.sub(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2})?", "DATE", line)
+        # module completion status: "| ... | <seconds> |" -> "| ... | T |"
+        line = re.sub(r"\| ?[0-9]+(\.[0-9]+)? ?\|$", "| T |", line) if line.startswith("| ") and line.count("|") == 7 else line
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def _digest_report(outdir: Path, root: Path) -> Dict[str, str]:
+    path = outdir / "report.md"
+    if not path.is_file():
+        return {}
+    return {"report_md": _sha(_canon_report(path.read_text(), root))}
 
 
 def _digest_adata(adata) -> Dict[str, str]:
@@ -176,9 +212,11 @@ RUNS = {"single_guide": _single_guide_run, "dual_guide_pair": _pair_run}
 def digests(tmp_path_factory) -> Dict[str, Dict[str, str]]:
     out: Dict[str, Dict[str, str]] = {}
     for name, fn in RUNS.items():
-        result, outdir = fn(tmp_path_factory.mktemp(f"golden_{name}"))
+        root = tmp_path_factory.mktemp(f"golden_{name}")
+        result, outdir = fn(root)
         d = _digest_tables(outdir)
         d.update(_digest_adata(result.adata))
+        d.update(_digest_report(outdir, root))
         out[name] = d
     return out
 
@@ -241,8 +279,25 @@ def test_golden_covers_the_core_tables():
         "tables/knockdown_filter",
         "obs",
         "structure",
+        "report_md",
     ):
         assert key in single, key
     pair = golden["dual_guide_pair"]
-    for key in ("tables/guide_assignment", "tables/pair_assignment_summary", "tables/perturbation_full", "obs"):
+    for key in ("tables/guide_assignment", "tables/pair_assignment_summary", "tables/perturbation_full", "obs", "report_md"):
         assert key in pair, key
+
+
+def test_report_canonicalisation_neutralises_run_specific_lines(tmp_path):
+    text = (
+        "Run `x` — generated 2026-10-09 01:04. HTML report: `report.html`.\n"
+        f"- sample metadata: `{tmp_path}/meta.csv`\n"
+        "- package versions: python 3.12.3\nscanpy 1.12.4\n\n"
+        "| Git branch / commit | main abc |\n| Command | pytest -q |\n| Random seed | 0 |\n"
+        "| load | Input loading | True | completed | 600 cells | 18.6 |\n"
+        "- Only 3% of cells received a confident guide call.\n"
+    )
+    canon = _canon_report(text, tmp_path)
+    assert "2026-10-09" not in canon and str(tmp_path) not in canon and "scanpy" not in canon
+    assert "Git branch" not in canon and "Command" not in canon
+    assert "| Random seed | 0 |" in canon and "| load | Input loading | True | completed | 600 cells | T |" in canon
+    assert "Only 3% of cells received a confident guide call." in canon

@@ -8,12 +8,16 @@
 | `dual_guide_pair` (alias `pair`) | the strongest guide of **each scaffold class** passes the same gate against the runner-up of its own class; the (A, C) pair is then interpreted | the pair's target |
 | `high_moi` | every guide with `>= guides.high_moi.min_umi` UMIs (and a fraction of the cell's top guide) is called; the cell is a member of all their targets — see [high_moi_assignment.md](high_moi_assignment.md) | the highest-UMI targeting guide's target (primary label) |
 
-Both modes write the same downstream contract: `obs['target_gene']`,
+All three modes write the same downstream contract: `obs['target_gene']`,
 `obs['perturbation_class']` (`targeting` / `non-targeting` / `ambiguous` /
-`unassigned`) and `obs['guide_id']` (`"<A guide>|<C guide>"` in pair mode).
-Every later stage reads these columns and nothing else, so clustering,
-perturbation strength, enrichment, PS score, lochNESS, distance, distance
-space and modules behave identically under both modes.
+`unassigned`) and `obs['guide_id']` (`"<A guide>|<C guide>"` in pair mode; the
+highest-UMI targeting guide in high-MOI mode). Every later stage reads these
+columns and nothing else, so clustering, perturbation strength, enrichment, PS
+score, lochNESS, distance, distance space and modules behave identically under
+all three modes. In `high_moi` mode that means the downstream analysis uses
+each cell's **primary** target, while the full cells x targets membership is
+kept separately in `obsm['perturbation_membership']` (see
+[high_moi_assignment.md](high_moi_assignment.md)).
 
 ## Configuration
 

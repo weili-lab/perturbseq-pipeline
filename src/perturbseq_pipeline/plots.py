@@ -607,7 +607,7 @@ def _plot_representation(expr, guides, reg: FigureRegistry, cfg: Config) -> None
 
 def plot_high_moi_calling(expr, reg: FigureRegistry, cfg: Config) -> None:
     """High-MOI membership diagnostics (only called in ``assignment_mode: high_moi``)."""
-    from .high_moi import OBS_N_GUIDES, OBS_N_TARGETS, UNS_RANK_PROFILE, cells_per_target
+    from .high_moi import OBS_N_CALLED, OBS_N_GUIDES, OBS_N_TARGETS, UNS_RANK_PROFILE, cells_per_target
 
     hcfg = cfg.guides.high_moi
     obs = expr.obs
@@ -637,16 +637,24 @@ def plot_high_moi_calling(expr, reg: FigureRegistry, cfg: Config) -> None:
         )
     if OBS_N_TARGETS in obs.columns:
         nt = obs[OBS_N_TARGETS].to_numpy()
-        ng = obs[OBS_N_GUIDES].to_numpy()
+        # Pre-cap counts: over-cap cells keep their real count here (their membership rows are cleared).
+        ng = obs[OBS_N_CALLED].to_numpy() if OBS_N_CALLED in obs.columns else obs[OBS_N_GUIDES].to_numpy()
+        n_over = int((ng > hcfg.max_guides_per_cell).sum())
         fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.8))
-        for ax, vals, label in ((axes[0], ng, "Called guides per cell"), (axes[1], nt, "Targets per cell")):
-            top = int(min(max(vals.max(), 1), 40))
+        cap_top = int(min(max(ng.max(), hcfg.max_guides_per_cell + 5, 1), max(60, hcfg.max_guides_per_cell + 10)))
+        for ax, vals, label, top in (
+            (axes[0], ng, "Called guides per cell (before the cap)", cap_top),
+            (axes[1], nt, "Targets per cell (membership)", int(min(max(nt.max(), 1), 40))),
+        ):
             ax.hist(np.clip(vals, 0, top), bins=np.arange(-0.5, top + 1.5, 1))
-            ax.set_xlabel(label)
+            ax.set_xlabel(label + (f"; values > {top} shown at {top}" if vals.max() > top else ""))
             ax.set_ylabel("Cells")
             sns.despine(ax=ax)
         axes[0].axvline(hcfg.max_guides_per_cell + 0.5, ls="--", lw=1, color="k")
-        axes[0].set_title(f"Membership (median {np.median(ng[ng > 0]) if (ng > 0).any() else 0:.0f} guides / assigned cell)", fontsize=10)
+        axes[0].set_title(
+            f"Called guides (median {np.median(ng[ng > 0]) if (ng > 0).any() else 0:.0f}; {n_over:,} cells above the cap)",
+            fontsize=10,
+        )
         axes[1].set_title("Distinct targets per cell", fontsize=10)
         fig.tight_layout()
         reg.save(
@@ -654,7 +662,11 @@ def plot_high_moi_calling(expr, reg: FigureRegistry, cfg: Config) -> None:
             "high_moi_guides_per_cell",
             SECTION_GUIDES,
             "Called guides and targets per cell",
-            f"Membership counts per cell; cells beyond max_guides_per_cell = {hcfg.max_guides_per_cell} (dashed) are classed ambiguous.",
+            (
+                f"Left: guides passing the call per cell before the max_guides_per_cell = {hcfg.max_guides_per_cell} gate "
+                f"(dashed); the {n_over:,} cells to its right are classed ambiguous and carry no membership. "
+                "Right: distinct targets per cell under membership."
+            ),
         )
     try:
         counts = cells_per_target(expr, cfg).drop(index=cfg.guides.ntc_label, errors="ignore")

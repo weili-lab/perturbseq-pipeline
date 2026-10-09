@@ -36,6 +36,7 @@ from perturbseq_pipeline.guides import (  # noqa: E402
 from perturbseq_pipeline.high_moi import (  # noqa: E402
     MODE_HIGH_MOI,
     OBS_MODE,
+    OBS_N_CALLED,
     OBS_N_GUIDES,
     OBS_N_TARGETS,
     OBS_NTC_ONLY,
@@ -147,6 +148,8 @@ def test_cap_marks_ambiguous_and_clears_membership():
     assert obs.loc["over_cap", OBS_CLASS] == CLASS_AMBIGUOUS
     assert obs.loc["over_cap", OBS_TARGET] == cfg.guides.ambiguous_label
     assert obs.loc["over_cap", OBS_N_GUIDES] == 0
+    assert obs.loc["over_cap", OBS_N_CALLED] == 7  # pre-cap count kept for diagnostics
+    assert obs.loc["two_targets", OBS_N_CALLED] == obs.loc["two_targets", OBS_N_GUIDES] == 2
     i = res.obs_names.get_loc("over_cap")
     assert res.obsm[cfg.guides.high_moi.guide_membership_obsm_key][i].nnz == 0
     assert res.uns["high_moi_calling"]["n_cells_over_cap"] == 1
@@ -237,6 +240,10 @@ def test_config_validation():
         cfg = Config.from_dict({**base, "guides": {"assignment_mode": "high_moi", "high_moi": bad}})
         with pytest.raises(ValueError, match="guides.high_moi"):
             cfg.validate()
+    for key in ("membership_obsm_key", "guide_membership_obsm_key"):
+        cfg = Config.from_dict({**base, "guides": {"assignment_mode": "high_moi", "high_moi": {key: "guide_counts"}}})
+        with pytest.raises(ValueError, match="output.guide_obsm_key"):
+            cfg.validate()  # would be overwritten by the merged raw guide counts in stage 13
     cfg = Config.from_dict({"input": {"h5ad": "x.h5ad"}, "guides": {"multiplet": {"expected_guides_per_cell": None}}})
     cfg.validate()
     assert cfg.guides.multiplet.expected_guides_per_cell is None

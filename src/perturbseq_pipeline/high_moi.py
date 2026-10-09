@@ -17,6 +17,10 @@ Outputs (the contract every later stage can build on)
     names and ``uns['membership_guides']`` the guide ids.
 ``obs['n_guides_assigned']``, ``obs['n_targets_assigned']``
     row sums (targets exclude the NTC column).
+``obs['n_guides_called']``
+    guides passing the call **before** the ``max_guides_per_cell`` /
+    ``min_guides_per_cell`` gates (so over-cap cells keep their real count for
+    diagnostics while their membership rows are cleared).
 ``obs['is_ntc_only']``
     at least one NTC guide and no targeting guide.
 ``obs['perturbation_class']``
@@ -71,6 +75,7 @@ logger = logging.getLogger(__name__)
 MODE_HIGH_MOI = "high_moi"
 OBS_MODE = "guide_assignment_mode"
 OBS_N_GUIDES = "n_guides_assigned"
+OBS_N_CALLED = "n_guides_called"
 OBS_N_TARGETS = "n_targets_assigned"
 OBS_NTC_ONLY = "is_ntc_only"
 UNS_TARGETS = "membership_targets"
@@ -273,6 +278,7 @@ def assign_high_moi(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad.Ann
     )
     expr.obs[OBS_MODE] = pd.Categorical([MODE_HIGH_MOI] * n_cells)
     # Membership contract
+    expr.obs[OBS_N_CALLED] = n_called
     expr.obs[OBS_N_GUIDES] = n_guides_assigned
     expr.obs[OBS_N_TARGETS] = n_targets_assigned
     expr.obs[OBS_NTC_ONLY] = is_ntc_only
