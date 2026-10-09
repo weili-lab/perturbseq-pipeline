@@ -129,10 +129,14 @@ once (targets x targets) and `Xᵀ Y` is accumulated over
 `n_guides`) across cells within `regression.batch_key`; they (1) calibrate each
 target's t statistic by genomic control (divided by `sqrt(lambda)`,
 `lambda = max(1, permuted median t² / expected median)`) before its t-test
-p-value, BH across genes within the target, and (2) give the empirical FDR of
-the call set: the same calls made on the permuted data, mean count over the
+p-value, BH across genes within the target (`regression.fdr_scope: target`,
+the modules convention) or across all (target, gene) pairs (`global`), and (2)
+give the empirical FDR of the call set: the same calls made on the permuted data, mean count over the
 observed count (`tables/regression_design.csv`: `empirical_fdr`; it treats every
-target as null in the permutations, so it is conservative). A purely empirical
+target as null in the permutations, so it is conservative). With many null
+targets, per-target BH lets roughly `fdr_alpha` x (number of null targets)
+targets carry a spurious call; `empirical_fdr` shows it, and `fdr_scope: global`
+controls the FDR of the whole call set instead. A purely empirical
 p-value is not used because it cannot go below `1 / (1 + permutations x genes)`,
 which would cap the q-value of a target with a single real hit at about
 `1 / permutations`. Outputs: `tables/regression_effect_matrix.csv` (targets x

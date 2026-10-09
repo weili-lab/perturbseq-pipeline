@@ -220,6 +220,7 @@ regression:
   n_guides_covariate: true
   depth_covariate: true
   fdr_alpha: 0.05
+  fdr_scope: target
   min_abs_log2fc: 0.0
 enrichment:
   enabled: true

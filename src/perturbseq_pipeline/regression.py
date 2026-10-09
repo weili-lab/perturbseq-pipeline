@@ -21,7 +21,9 @@ the cell <-> guide link. They are used twice:
 * calibration (genomic control): per target, ``lambda = max(1, median(null t²) /
   median(t² under the t distribution))``; the observed t is divided by
   ``sqrt(lambda)`` before its two-sided t-test p-value (residual df), and BH runs
-  across genes within the target (the modules convention);
+  across genes within the target (the modules convention; ``fdr_scope: global``
+  runs it over all (target, gene) pairs, which controls the FDR of the whole
+  call set rather than per target);
 * check: the same calls are made on every permuted data set; the mean number of
   permuted (target, gene) pairs passing the FDR cut over the observed number is
   reported as the empirical FDR of the call set (``regression_design``).
@@ -79,7 +81,7 @@ class RegressionResults:
     tstat: pd.DataFrame
     #: Reported targets x genes, t-test p-value after the per-target genomic-control deflation.
     pval: pd.DataFrame
-    #: Reported targets x genes, BH FDR across genes within each target.
+    #: Reported targets x genes, BH FDR (within each target, or over all pairs: ``regression.fdr_scope``).
     fdr: pd.DataFrame
     #: One row per reported target.
     summary: pd.DataFrame
@@ -111,6 +113,13 @@ def _select_genes(expr: ad.AnnData, cfg: Config, n_targets: int) -> List[str]:
     from .modules import select_genes
 
     return select_genes(expr, cfg, large_mode=cfg.use_large_mode(expr.n_obs, n_perturbations=n_targets))
+
+
+def _bh(pval: np.ndarray, scope: str) -> np.ndarray:
+    """BH across genes within each target (``target``) or across all pairs (``global``)."""
+    if scope == "global":
+        return benjamini_hochberg(pval.ravel()).reshape(pval.shape)
+    return np.vstack([benjamini_hochberg(row) for row in pval])
 
 
 def _within_group_permutation(groups: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -293,19 +302,14 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
     # ~1 / n_perm; so the permutations calibrate the t statistic instead of replacing its distribution, and
     # the same calls made on every permuted data set give an empirical FDR of the whole call set.
     t_med2 = float(_tdist.ppf(0.75, residual_df) ** 2)  # median of t^2 under the model null
-    pval = np.ones((n_report, G), dtype=np.float64)
-    fdr = np.ones((n_report, G), dtype=np.float64)
-    lam = np.ones(n_report, dtype=np.float64)
+    lam = np.array([max(1.0, float(np.median(np.square(row, dtype=np.float64))) / t_med2) for row in null])
+    scale = np.sqrt(lam)[:, None]
+    pval = 2.0 * _tdist.sf(np.abs(t_all) / scale, residual_df)
+    fdr = _bh(pval, rcfg.fdr_scope)
     n_sig_null = np.zeros(n_perm, dtype=np.int64)
-    abs_t = np.abs(t_all)
-    for r in range(n_report):
-        lam[r] = max(1.0, float(np.median(null[r].astype(np.float64) ** 2)) / t_med2)
-        scale = math.sqrt(lam[r])
-        pval[r] = 2.0 * _tdist.sf(abs_t[r] / scale, residual_df)
-        fdr[r] = benjamini_hochberg(pval[r])
-        for d in range(n_perm):
-            p0 = 2.0 * _tdist.sf(null[r, d * G : (d + 1) * G].astype(np.float64) / scale, residual_df)
-            n_sig_null[d] += int((benjamini_hochberg(p0) < rcfg.fdr_alpha).sum())
+    for d in range(n_perm):
+        p0 = 2.0 * _tdist.sf(null[:, d * G : (d + 1) * G].astype(np.float64) / scale, residual_df)
+        n_sig_null[d] = int((_bh(p0, rcfg.fdr_scope) < rcfg.fdr_alpha).sum())
     del null
     n_sig_obs = int((fdr < rcfg.fdr_alpha).sum())
     perm_mean_sig = float(n_sig_null.mean())
@@ -362,6 +366,7 @@ def run_regression(expr: ad.AnnData, cfg: Config) -> Optional[RegressionResults]
         "null_values_per_target": n_perm * G,
         "residual_df": residual_df,
         "fdr_alpha": float(rcfg.fdr_alpha),
+        "fdr_scope": rcfg.fdr_scope,
         "min_abs_log2fc": float(rcfg.min_abs_log2fc),
         "n_significant_pairs": int(sig.sum()),
         "n_targets_with_de": int((sig.sum(axis=1) > 0).sum()),

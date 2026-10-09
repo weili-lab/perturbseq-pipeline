@@ -452,6 +452,10 @@ class RegressionConfig:
     #: Include ``log(obs['total_counts'])`` (depth) as a covariate.
     depth_covariate: bool = True
     fdr_alpha: float = 0.05
+    #: BH family: ``target`` (genes within each target, as in ``modules``) or
+    #: ``global`` (all target x gene pairs; controls the FDR of the whole call
+    #: set, which per-target BH does not when many targets are null).
+    fdr_scope: str = "target"
     #: A significant pair also needs ``|log2fc|`` above this.
     min_abs_log2fc: float = 0.0
 
@@ -1426,6 +1430,8 @@ class Config:
             raise ValueError("regression.n_permutations must be >= 1 (the FDR is permutation-based)")
         if not (0 < reg.fdr_alpha < 1):
             raise ValueError("regression.fdr_alpha must be in (0, 1)")
+        if reg.fdr_scope not in ("target", "global"):
+            raise ValueError(f"regression.fdr_scope must be 'target' or 'global' (got {reg.fdr_scope!r})")
         if reg.min_abs_log2fc < 0:
             raise ValueError("regression.min_abs_log2fc must be >= 0")
         # ==============================================================

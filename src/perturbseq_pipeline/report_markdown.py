@@ -405,8 +405,9 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "each effect is adjusted for the targets co-carried in the same cells. "
             f"Permutations ({r.n_permutations}; membership rows shuffled across cells{f' within `{r.batch_key}`' if r.batch_key else ''}) "
             "calibrate each target's t statistic (genomic control: divided by sqrt(lambda), lambda = permuted median t² / its "
-            "expected value, at least 1) before the t-test p-value; BH across genes within each target; "
-            f"significant at FDR < {r.fdr_alpha}"
+            "expected value, at least 1) before the t-test p-value; "
+            + ("BH across all (target, gene) pairs; " if r.fdr_scope == "global" else "BH across genes within each target; ")
+            + f"significant at FDR < {r.fdr_alpha}"
             + (f" and |log2fc| > {r.min_abs_log2fc:g}" if r.min_abs_log2fc > 0 else "")
             + ". The same calls made on the permuted data give the empirical FDR of the call set "
             "(`perm_mean_pairs_fdr_pass` / `n_pairs_fdr_pass` = `empirical_fdr` below)"

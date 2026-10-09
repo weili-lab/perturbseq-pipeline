@@ -166,6 +166,25 @@ def test_global_null_calls_nothing():
     assert res.info["n_significant_pairs"] <= 2
 
 
+def test_global_fdr_scope_controls_the_call_set():
+    """Many null targets: per-target BH lets spurious calls through, global BH does not."""
+    rng = np.random.default_rng(5)
+    k = 60
+    T = _random_design(rng, n=1500, k=k, moi=4.0)
+    Y = rng.normal(2.0, 0.5, size=(1500, 50))
+    Y[T[:, 0] == 1, :10] -= 0.6  # one real target
+    a = _membership_adata(T, Y, [f"T{j}" for j in range(k)])
+    per_target = reg_mod.run_regression(a, _cfg(batch_key=None))
+    glob = reg_mod.run_regression(a, _cfg(batch_key=None, fdr_scope="global"))
+    for res in (per_target, glob):
+        assert (res.fdr.loc["T0"].iloc[:10] < 0.05).all()
+    false_pt = per_target.info["n_significant_pairs"] - 10
+    false_gl = glob.info["n_significant_pairs"] - 10
+    assert false_gl <= 2 and false_gl <= false_pt
+    assert glob.info["empirical_fdr"] < 0.2
+    np.testing.assert_allclose(per_target.pval.to_numpy(), glob.pval.to_numpy())  # same p-values, other family
+
+
 def test_min_cells_reports_only_supported_targets_but_keeps_them_in_the_design():
     rng = np.random.default_rng(4)
     T = _random_design(rng, n=300, k=5)
