@@ -45,6 +45,7 @@ STAGES: List[tuple] = [
     ("guide_assignment", "Guide assignment"),
     ("clustering", "Normalization, embedding, clustering"),
     ("perturbation", "Perturbation strength"),
+    ("regression", "Membership regression (high-MOI)"),
     ("enrichment", "Cluster enrichment"),
     ("modules", "Co-functional modules and gene programs"),
     ("ps_score", "Per-cell perturbation scores (PS)"),
@@ -58,7 +59,7 @@ STAGES: List[tuple] = [
 _LABELS = dict(STAGES)
 
 #: Config sections with an ``enabled`` switch, i.e. the optional modules.
-OPTIONAL_MODULES = ("enrichment", "modules", "ps_score", "lochness", "distance", "distance_space", "meta_analysis")
+OPTIONAL_MODULES = ("regression", "enrichment", "modules", "ps_score", "lochness", "distance", "distance_space", "meta_analysis")
 
 
 class ModuleStatusTracker:

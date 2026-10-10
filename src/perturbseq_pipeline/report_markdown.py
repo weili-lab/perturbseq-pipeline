@@ -21,7 +21,7 @@ from typing import Iterable, List, Optional
 import pandas as pd
 
 from .plots import SECTION_CLUSTERING, SECTION_GUIDES, SECTION_PERTURBATION, SECTION_QC, FigureRegistry
-from .report import ReportInputs, _versions
+from .report import ReportInputs, _versions, regression_formula, regression_stratum
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +391,38 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
             "",
         ]
     # ---- optional stages: only the ones that produced a table in this run -------------------------
+    if "regression_design" in tables:
+        r = cfg.regression
+        stratum = regression_stratum(tables)
+        if stratum:
+            perm_scope = f" within `{stratum}`"
+        elif r.batch_key:
+            perm_scope = f", unstratified: `{r.batch_key}` is not in obs"
+        else:
+            perm_scope = ", unstratified"
+        L += [
+            H("Membership regression (high-MOI)"),
+            "",
+            "All targets fitted jointly, one linear model per gene over the assigned cells (targeting + NTC-only): "
+            f"`{regression_formula(tables)}`, ridge penalty {r.ridge_alpha:g} on the membership coefficients. Unlike the pseudobulk contrasts, "
+            "each effect is adjusted for the targets co-carried in the same cells. "
+            f"Permutations ({r.n_permutations}; membership rows shuffled across cells{perm_scope}) "
+            "calibrate each target's t statistic (genomic control: divided by sqrt(lambda), lambda = permuted median t² / its "
+            "expected value, at least 1) before the t-test p-value; "
+            + ("BH across all (target, gene) pairs; " if r.fdr_scope == "global" else "BH across genes within each target; ")
+            + f"significant at FDR < {r.fdr_alpha}"
+            + (f" and |log2fc| > {r.min_abs_log2fc:g}" if r.min_abs_log2fc > 0 else "")
+            + ". The same calls made on the permuted data give the empirical FDR of the call set "
+            "(`empirical_fdr` for pairs, `empirical_target_fdr` for targets with a DE gene, below; conservative, "
+            "since every target is null after permutation)"
+            + ". `log2fc` = lognorm coefficient / ln 2 (log2 ratio of geometric means of normalised counts + 1). "
+            "Full matrices: `tables/regression_effect_matrix.csv`, `tables/regression_fdr.csv`; pairs: `tables/regression_de.csv`.",
+            "",
+            T("regression_design"),
+            "",
+            T("regression_summary", 60),
+            "",
+        ]
     if "enrichment" in tables:
         e = cfg.enrichment
         L += [
@@ -420,7 +452,13 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         L += [
             H("Co-functional modules and gene programs"),
             "",
-            f"Perturbation x gene log2FC-vs-`{m.control}` matrix; perturbations clustered into modules ({m.module_correlation} correlation), genes into programs ({m.program_correlation} correlation), {m.linkage_method} linkage. "
+            (
+                "Perturbation x gene matrix of membership-regression effects (log2 scale, adjusted for co-carried "
+                "targets and covariates; `modules.effect_source: regression`)"
+                if m.effect_source == "regression"
+                else f"Perturbation x gene log2FC-vs-`{m.control}` matrix"
+            )
+            + f"; perturbations clustered into modules ({m.module_correlation} correlation), genes into programs ({m.program_correlation} correlation), {m.linkage_method} linkage. "
             "Programs are annotated by over-representation against MSigDB collections downloaded at run time; `unannotated` means no term passed FDR, or (see Warnings) that the enrichment did not run.",
             "",
             "Programs:",

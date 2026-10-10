@@ -262,6 +262,23 @@ in <code>tables/pair_perturbation_by_target.csv</code>; per-target ECDFs in <cod
 </div>
 {% endif %}
 
+{% if regression_ran %}
+<h3 id="regression">3b. Membership regression (high-MOI)</h3>
+<p class="lede">
+  All targets fitted jointly, one linear model per gene over the assigned cells, with covariates and a ridge
+  penalty on the membership coefficients, so each effect is adjusted for the targets co-carried in the same
+  cells. Permutations (membership rows shuffled across cells
+  {%- if regression_stratum %} within <code>{{ regression_stratum }}</code>
+  {%- elif cfg.regression.batch_key %}, unstratified: <code>{{ cfg.regression.batch_key }}</code> is not in obs
+  {%- else %}, unstratified{% endif %}) calibrate each target's t statistic (genomic
+  control) and give the empirical FDR of the call set (<code>empirical_fdr</code>);
+  {% if cfg.regression.fdr_scope == 'global' %}BH across all target/gene pairs.{% else %}BH across genes within each target.{% endif %}
+  Full matrices are in <code>tables/regression_effect_matrix.csv</code> and <code>tables/regression_fdr.csv</code>.
+</p>
+{{ tables.regression_design }}
+<div class="scroll">{{ tables.regression_summary }}</div>
+{% endif %}
+
 <!-- ===================== 4. Enrichment ===================== -->
 {% if enrichment %}
 <h2 id="enrichment">4. Perturbation enrichment across clusters</h2>
@@ -471,7 +488,7 @@ in <code>tables/pair_perturbation_by_target.csv</code>; per-target ECDFs in <cod
 <h2 id="modules">7. Co-functional modules &amp; gene programs</h2>
 <p class="lede">
   The "regulome" map. A {{ modules.n_perturbations }} &times; {{ modules.n_genes }}
-  perturbation&times;gene matrix of log2FC vs {{ modules.control_label }} is clustered on
+  perturbation&times;gene matrix of {{ modules.effect_description }} is clustered on
   both axes: perturbations into <b>{{ modules.n_modules }} co-functional modules</b>
   ({{ modules.module_correlation }}-correlation) and downstream genes into
   <b>{{ modules.n_programs }} co-regulated programs</b> ({{ modules.program_correlation }}-correlation,

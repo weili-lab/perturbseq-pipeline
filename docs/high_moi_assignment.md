@@ -116,11 +116,50 @@ columns in `uns['kd_membership_targets']`), and `obs['kd_status']` /
 `tables/guide_assignment.csv` keeps both `testable` (primary-label rule) and
 `testable_membership`.
 
+**Membership regression** (`regression.enabled`, off by default, high-MOI only;
+`regression.py`). All targets are fitted jointly, one linear model per gene over
+the assigned cells (targeting + NTC-only):
+`lognorm ~ membership (all targets) + n_guides + log(total_counts) + lane`,
+with a ridge penalty (`regression.ridge_alpha`) on the membership coefficients
+only. Each effect is therefore adjusted for the targets co-carried in the same
+cells, which the pseudobulk contrasts above are not. Each design (the observed
+one and every permutation) is factorised once (targets x targets) and processed
+in turn, so only one factor is held in memory; `Xᵀ Y` is accumulated over
+`scaling.effect_gene_chunk` gene chunks from the sparse layer for each design.
+`regression.n_permutations` permutations shuffle the membership rows (with
+`n_guides`) across cells within `regression.batch_key`; they (1) calibrate each
+target's t statistic by genomic control (divided by `sqrt(lambda)`,
+`lambda = max(1, permuted median t² / expected median)`) before its t-test
+p-value, BH across all (target, gene) pairs (`regression.fdr_scope: global`,
+the default) or across genes within each target (`target`, the modules
+convention), and (2) give the empirical FDR of the call set: the same calls made on the permuted data, mean count over the
+observed count (`tables/regression_design.csv`: `empirical_fdr`; it treats every
+target as null in the permutations, so it is conservative; it also reuses the
+permutations that set lambda). `empirical_target_fdr` is the same for targets
+with at least one DE gene. With many null targets, per-target BH lets roughly
+`fdr_alpha` x (number of null targets) targets carry a spurious call: on the ESC
+full-scale screen (2,084 targets, 889 genes) `fdr_scope: target` called 443
+targets with an empirical target FDR of 0.32, `global` 413 targets with 0.016 —
+hence the default. A purely empirical
+p-value is not used because it cannot go below `1 / (1 + permutations x genes)`,
+which would cap the q-value of a target with a single real hit at about
+`1 / permutations`. Outputs: `tables/regression_effect_matrix.csv` (targets x
+genes, `log2fc` = lognorm coefficient / ln 2, a log2 ratio of geometric means of
+normalised counts + 1), `regression_fdr.csv`, `regression_de.csv` (significant
+pairs), `regression_summary.csv` (per target: DE counts, own-gene effect,
+`gc_lambda`). `regression.genes: modules` (default) fits the modules stage's
+gene selection, so `modules.effect_source: regression` can build the modules
+and programs from the adjusted matrix and its FDR instead of the pseudobulk
+log2FC. `n_guides` is close to the membership row sum, so it is identified only
+through cells whose guide count differs from their target count and through
+the ridge penalty: a response shared by every target is attributed to guide
+burden, not to the targets.
+
 Caveats: with ~9 co-carried guides per cell a strong perturbation leaks into
 the `other` control of the targets it co-occurs with (diluted roughly by
-1 / number of targets); a regression estimator that adjusts for co-carried
-guides is the planned next step. Distance-space similarities are inflated by
-shared cells and should be read with that in mind.
+1 / number of targets); the membership regression above adjusts for it, the
+pseudobulk stages do not. Distance-space similarities are inflated by shared
+cells and should be read with that in mind.
 
 Consistency: on cells that carry exactly one target, the membership paths
 reproduce the `single_guide` results to floating-point precision

@@ -690,6 +690,46 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
             _write_table(name, df, tabledir, table_paths)
         _collect("pair perturbation", cfg=cfg, large_mode=large_mode)
     # =====================================================================
+    # Stage 5b: membership regression (high-MOI, optional)
+    # =====================================================================
+    regression = None
+    if cfg.regression.enabled:
+        from . import regression as reg_mod
+
+        status.start("regression")
+        logger.info("=== Stage 5b/14: membership regression (high-MOI) ===")
+        regression = reg_mod.run_regression(expr, cfg)
+        if regression is not None:
+            _write_indexed_matrix("regression_effect_matrix", regression.log2fc, "target_gene", tabledir, table_paths)
+            _write_indexed_matrix("regression_fdr", regression.fdr, "target_gene", tabledir, table_paths)
+            _write_table("regression_de", regression.de, tabledir, table_paths)
+            _write_table("regression_summary", regression.summary, tabledir, table_paths)
+            _write_table("regression_design", regression.design, tabledir, table_paths)
+            tables["regression_design"] = regression.design
+            _table_for_report(
+                tables,
+                "regression_summary",
+                regression.summary,
+                large_mode=large_mode,
+                max_rows_large=cfg.scaling.report_preview_rows,
+            )
+            _collect("membership regression", cfg=cfg, large_mode=large_mode)
+            status.mark(
+                "regression",
+                STATUS_COMPLETED,
+                f"{regression.info['n_significant_pairs']} significant (target, gene) pairs; "
+                f"{regression.info['n_targets_with_de']}/{regression.info['n_targets_reported']} targets with DE genes",
+            )
+        else:
+            status.mark(
+                "regression",
+                STATUS_SKIPPED,
+                f"nothing to fit: no target with >= {cfg.regression.min_cells} member cells, "
+                f"or no genes selected (regression.genes: {cfg.regression.genes}); see the log",
+            )
+    else:
+        status.mark("regression", STATUS_DISABLED, "regression.enabled: false", enabled=False)
+    # =====================================================================
     # Stage 6: enrichment
     # =====================================================================
     enrichment = None
@@ -741,10 +781,16 @@ def run_pipeline(cfg: Config, verbose: bool = False, config_path: Optional[str] 
     # Stage 7: modules/programs
     # =====================================================================
     modules_result = None
-    if cfg.modules.enabled:
+    if cfg.modules.enabled and cfg.modules.effect_source == "regression" and regression is None:
+        # Never substitute pseudobulk effects for the configured regression effects.
+        reason = "modules.effect_source is 'regression' but the regression stage produced no result"
+        logger.warning("Modules/programs skipped: %s", reason)
+        warnings.append(f"Modules: skipped — {reason} (see the regression stage status).")
+        status.mark("modules", STATUS_SKIPPED, reason)
+    elif cfg.modules.enabled:
         status.start("modules")
         logger.info("=== Stage 7/14: co-functional modules & gene programs ===")
-        modules_result = modules_mod.compute_modules(expr, cfg)
+        modules_result = modules_mod.compute_modules(expr, cfg, regression=regression)
         if modules_result is not None:
             # Do NOT call reset_index() on a potentially 10k x 2k matrix.
             _write_indexed_matrix("effect_matrix", modules_result.effect_matrix, "target_gene", tabledir, table_paths)

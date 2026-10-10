@@ -77,6 +77,42 @@ class ReportInputs:
     provenance_rows: List[tuple] = field(default_factory=list)
 
 
+def regression_ran(tables: Dict[str, pd.DataFrame]) -> bool:
+    """The membership regression produced a result in this run (its design table exists)."""
+    design = tables.get("regression_design")
+    return design is not None and not design.empty
+
+
+def _regression_design(tables: Dict[str, pd.DataFrame]) -> Dict[str, str]:
+    design = tables.get("regression_design")
+    if design is None or design.empty:
+        return {}
+    return dict(zip(design["metric"].astype(str), design["value"].astype(str)))
+
+
+def regression_formula(tables: Dict[str, pd.DataFrame]) -> str:
+    """Model formula from the FITTED design (constant covariates are dropped at fit time)."""
+    covs = [c.strip() for c in _regression_design(tables).get("covariates", "none").split(",")]
+    terms = ["membership (all targets)"]
+    if "n_guides_assigned" in covs:
+        terms.append("n_guides")
+    if "log_total_counts" in covs:
+        terms.append("log(total_counts)")
+    stratum = regression_stratum(tables)
+    if stratum and any(c.startswith(f"{stratum}=") for c in covs):
+        terms.append(stratum)
+    return "lognorm ~ " + " + ".join(terms)
+
+
+def regression_stratum(tables: Dict[str, pd.DataFrame]) -> Optional[str]:
+    """obs column the regression permutations were stratified by, from its design table (None = unstratified)."""
+    design = tables.get("regression_design")
+    if design is None or design.empty:
+        return None
+    value = _regression_design(tables).get("batch_key", "none")
+    return None if value == "none" else value
+
+
 def _df_to_html(df: Optional[pd.DataFrame], max_rows: int = 200) -> str:
     """Render a DataFrame as an HTML table, or a placeholder when empty."""
     if df is None or len(df) == 0:
@@ -154,6 +190,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "clusters",
             "perturbation",
             "skipped",
+            "regression_design",
+            "regression_summary",
             "manifest",
             "enrichment",
             "enrichment_pseudo_summary",
@@ -191,7 +229,9 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "n_targets": int(enr.composition.shape[0]),
             "n_clusters": int(enr.composition.shape[1]),
             "n_tests": int(enr.composition.shape[0] * enr.composition.shape[1]),
-            "control_label": (CONTROL_LABELS_MEMBERSHIP if enr.membership_aware else CONTROL_LABELS)[enr.primary_control],
+            "control_label": (CONTROL_LABELS_MEMBERSHIP if enr.membership_aware else CONTROL_LABELS)[
+                enr.primary_control
+            ],
             "controls_described": " and ".join(
                 (CONTROL_LABELS_MEMBERSHIP if enr.membership_aware else CONTROL_LABELS)[c] for c in enr.controls_used
             ),
@@ -286,6 +326,15 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
             "control_label": (
                 CONTROL_LABELS_MEMBERSHIP if cfg.guides.assignment_mode == "high_moi" else CONTROL_LABELS
             ).get(mods.control, mods.control),
+            # what the matrix holds: a contrast vs a control, or the membership-regression coefficients
+            "effect_description": (
+                "membership-regression effects (log2 scale, adjusted for co-carried targets and covariates)"
+                if mods.control == "regression"
+                else "log2FC vs "
+                + (CONTROL_LABELS_MEMBERSHIP if cfg.guides.assignment_mode == "high_moi" else CONTROL_LABELS).get(
+                    mods.control, mods.control
+                )
+            ),
             "module_correlation": mods.module_correlation,
             "program_correlation": mods.program_correlation,
             "linkage": mods.linkage_method,
@@ -385,6 +434,8 @@ def build_report(inputs: ReportInputs, path: Path) -> Path:
         metadata_source=inputs.metadata_source or "none (single lane)",
         guide_source_text=inputs.guide_source_text,
         tables=tables_html,
+        regression_ran=regression_ran(inputs.tables),
+        regression_stratum=regression_stratum(inputs.tables),
         figures=figures,
         render_figure=lambda f: _render_figure(f, embed),
         controls_described=controls_described,
