@@ -51,6 +51,7 @@ import pandas as pd
 from scipy import sparse
 
 from .config import Config
+from .guide_calling import call_fishash, call_poisson_gauss
 from .guides import (
     CLASS_AMBIGUOUS,
     CLASS_NTC,
@@ -227,7 +228,11 @@ def assign_high_moi(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad.Ann
     if (~usable).any():
         logger.warning("%d guide(s) have no target label and are excluded from membership", int((~usable).sum()))
     # Membership call
-    if hcfg.method == "knee":
+    if hcfg.method == "fishash":
+        M = call_fishash(X, gcfg.fishash.fdr, gcfg.fishash.min_count, gcfg.fishash.refit)
+    elif hcfg.method == "poisson_gauss":
+        M = call_poisson_gauss(X, gcfg.poisson_gauss.min_count, gcfg.poisson_gauss.min_cells)
+    elif hcfg.method == "knee":
         M = call_membership_knee(X, hcfg.min_umi)
     else:
         M = call_membership_threshold(X, top_val, hcfg.min_umi, hcfg.min_frac_of_top)
@@ -427,7 +432,14 @@ def high_moi_tables(expr: ad.AnnData, cfg: Config, lane_key: str = "lane_id") ->
         return "n/a" if not np.isfinite(x) else f"{x:.0f}"
 
     rows = [
-        ("Calling method", f"{info.get('method', hcfg.method)} (min_umi={info.get('min_umi', hcfg.min_umi)}, min_frac_of_top={info.get('min_frac_of_top', hcfg.min_frac_of_top)})"),
+        (
+            "Calling method",
+            f"fishash (fdr={cfg.guides.fishash.fdr}, min_count={cfg.guides.fishash.min_count}, refit={cfg.guides.fishash.refit})"
+            if info.get("method", hcfg.method) == "fishash"
+            else f"poisson_gauss (min_count={cfg.guides.poisson_gauss.min_count}, min_cells={cfg.guides.poisson_gauss.min_cells})"
+            if info.get("method", hcfg.method) == "poisson_gauss"
+            else f"{info.get('method', hcfg.method)} (min_umi={info.get('min_umi', hcfg.min_umi)}, min_frac_of_top={info.get('min_frac_of_top', hcfg.min_frac_of_top)})",
+        ),
         ("Cells after QC", f"{n:,}"),
         ("Cells with >= 1 called guide", f"{int(assigned.sum()):,} ({100 * assigned.mean():.1f}%)"),
         ("Cells with >= 1 targeting membership", f"{int((nt > 0).sum()):,} ({100 * (nt > 0).mean():.1f}%)"),
