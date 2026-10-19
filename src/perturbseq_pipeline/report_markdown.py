@@ -197,8 +197,16 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         L += [
             H("High-MOI guide calling"),
             "",
-            f"Membership rule (`guides.high_moi.method: {hm.method}`): a guide is called in a cell when it has >= {hm.min_umi} UMIs"
-            + (f" and >= {hm.min_frac_of_top:g} x the cell's top guide" if hm.method == "threshold" else " and lies above the largest log-UMI drop of the cell")
+            (
+                f"Membership rule (`guides.high_moi.method: fishash`): a guide is called in a cell when its one-sided Fisher test "
+                f"against the guide's and the cell's totals passes at FDR {cfg.guides.fishash.fdr:g} (Guo-Sarkar) with >= {cfg.guides.fishash.min_count} UMIs"
+                if hm.method == "fishash"
+                else f"Membership rule (`guides.high_moi.method: poisson_gauss`): a guide is called in a cell when its raw UMI count reaches the guide's "
+                f"cutoff from a Poisson-Gaussian mixture fitted to the guide's log2 counts (crispat) and >= {cfg.guides.poisson_gauss.min_count} UMIs"
+                if hm.method == "poisson_gauss"
+                else f"Membership rule (`guides.high_moi.method: {hm.method}`): a guide is called in a cell when it has >= {hm.min_umi} UMIs"
+                + (f" and >= {hm.min_frac_of_top:g} x the cell's top guide" if hm.method == "threshold" else " and lies above the largest log-UMI drop of the cell")
+            )
             + f"; cells with more than {hm.max_guides_per_cell} called guides are classed ambiguous. Non-targeting guides collapse into one `{cfg.guides.ntc_label}` membership column. "
             "`obs['target_gene']` is each cell's primary (highest-UMI) target.",
             "",
@@ -284,13 +292,23 @@ def write_markdown_report(inputs: ReportInputs, path: Path) -> Path:
         L += [
             H("Guide assignment"),
             "",
-            f"Rule: a cell is assigned to its dominant guide when that guide has >= {cfg.guides.min_umi} UMIs and > {cfg.guides.dominance_ratio} x the runner-up"
-            + (
-                f" and the runner-up has <= {cfg.guides.max_second_umi} UMIs"
-                if cfg.guides.max_second_umi is not None and cfg.guides.max_second_umi >= 0
-                else ""
-            )
-            + "; cells with guide counts that fail the rule are `ambiguous`, cells without guide counts `unassigned`. Non-targeting guides give `perturbation_class = non-targeting`.",
+            (
+                f"Rule (`guides.calling_method: fishash`): guides are called by a one-sided Fisher test against the guide's and the cell's totals "
+                f"at FDR {cfg.guides.fishash.fdr:g} (Guo-Sarkar) with >= {cfg.guides.fishash.min_count} UMIs; a cell with one called guide is assigned to it, "
+                "cells with two or more are `ambiguous`, cells with none `unassigned`. Non-targeting guides give `perturbation_class = non-targeting`."
+                if cfg.guides.calling_method == "fishash"
+                else "Rule (`guides.calling_method: poisson_gauss`): a guide is called in a cell when its raw UMI count reaches the guide's cutoff from a "
+                f"Poisson-Gaussian mixture fitted to the guide's log2 counts (crispat) and >= {cfg.guides.poisson_gauss.min_count} UMIs; a cell with one called "
+                "guide is assigned to it, cells with two or more are `ambiguous`, cells with none `unassigned`. Non-targeting guides give `perturbation_class = non-targeting`."
+                if cfg.guides.calling_method == "poisson_gauss"
+                else f"Rule: a cell is assigned to its dominant guide when that guide has >= {cfg.guides.min_umi} UMIs and > {cfg.guides.dominance_ratio} x the runner-up"
+                + (
+                    f" and the runner-up has <= {cfg.guides.max_second_umi} UMIs"
+                    if cfg.guides.max_second_umi is not None and cfg.guides.max_second_umi >= 0
+                    else ""
+                )
+                + "; cells with guide counts that fail the rule are `ambiguous`, cells without guide counts `unassigned`. Non-targeting guides give `perturbation_class = non-targeting`."
+            ),
             "",
             T("guide_qc"),
             T("guide_assignment"),

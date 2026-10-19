@@ -244,6 +244,12 @@ class GuideConfig:
         the target from the guide identifier.
     """
 
+    #: ``single_guide`` mode: how a cell's guides are called. ``dominance``: the
+    #: top guide is assigned when ``top >= min_umi`` and ``top > dominance_ratio *
+    #: second``. ``fishash`` (see ``guides.fishash``) or ``poisson_gauss`` (see
+    #: ``guides.poisson_gauss``): guides are called per (cell, guide); a cell with one
+    #: called guide is assigned, with two or more ``ambiguous``, with none ``unassigned``.
+    calling_method: str = "dominance"
     min_umi: int = 3
     dominance_ratio: float = 2.0
     #: Pseudocount of the per-slot dominance ratio used by the pair mode:
@@ -374,6 +380,10 @@ class GuideConfig:
     multiplet: "GuideMultipletConfig" = field(default_factory=lambda: GuideMultipletConfig())
     #: High-MOI membership calling (``assignment_mode: high_moi``).
     high_moi: "HighMoiConfig" = field(default_factory=lambda: HighMoiConfig())
+    #: Fishash calling (``calling_method: fishash`` or ``high_moi.method: fishash``).
+    fishash: "FishashConfig" = field(default_factory=lambda: FishashConfig())
+    #: Poisson-Gaussian mixture calling (``calling_method`` / ``high_moi.method``: ``poisson_gauss``).
+    poisson_gauss: "PoissonGaussConfig" = field(default_factory=lambda: PoissonGaussConfig())
 
 
 # ===========================================================================
@@ -1157,8 +1167,10 @@ class HighMoiConfig:
     #: ``umi >= min_frac_of_top * top_umi`` of the cell. ``knee``: per cell, the
     #: largest drop in ``log1p(umi)`` between consecutive ranked guides (among
     #: guides with ``>= min_umi`` UMIs) separates members from background.
+    #: ``fishash`` / ``poisson_gauss``: the calls of ``guides.fishash`` /
+    #: ``guides.poisson_gauss`` (``min_umi`` and ``min_frac_of_top`` do not apply).
     method: str = "threshold"
-    #: Minimum UMIs for a guide to be called in a cell.
+    #: ``threshold`` / ``knee``: minimum UMIs for a guide to be called in a cell.
     min_umi: int = 10
     #: ``threshold`` method only: a guide also needs this fraction of the cell's
     #: top guide UMI count (depth-aware ambient filter). 0 disables it.
@@ -1178,6 +1190,40 @@ class HighMoiConfig:
     #: membership-aware statistics (enrichment, distance), giving an empirical
     #: false-positive rate. Pseudo-targets are named ``NTC:<guide>``.
     ntc_pseudo_targets: bool = True
+
+
+@dataclass
+class FishashConfig:
+    """Fishash guide calling (Kamm, Yeung & Forrest 2026; see ``guide_calling.py``).
+
+    Every non-zero (cell, guide) count gets a one-sided Fisher exact test against
+    the guide's and the cell's totals; calls are made at false-discovery rate
+    ``fdr`` with the Guo-Sarkar procedure (Bonferroni within a cell, BH across
+    cells).
+    """
+
+    fdr: float = 0.05
+    #: A call also needs at least this many UMIs.
+    min_count: int = 2
+    #: Rounds of the Simpson's-paradox correction (background re-estimated
+    #: without the called entries); stops earlier when the calls stop changing.
+    #: 0 runs the plain Fisher test.
+    refit: int = 10
+
+
+@dataclass
+class PoissonGaussConfig:
+    """Poisson-Gaussian mixture guide calling (crispat ``ga_poisson_gauss``; see ``guide_calling.py``).
+
+    Per guide, a background + signal mixture is fitted to the log2 of its non-zero
+    raw UMI counts, and cells at or above the guide's cutoff are called. The
+    defaults add the filters of the GWT pipeline (Dann et al. 2025) to crispat's.
+    """
+
+    #: A call also needs at least this many UMIs (GWT: 3; crispat's default: none).
+    min_count: int = 3
+    #: Guides non-zero in fewer cells are not fitted and call no cells (GWT: > 3).
+    min_cells: int = 4
 
 
 @dataclass
@@ -1354,9 +1400,27 @@ class Config:
                 "guides.assignment_mode must be 'single_guide', 'pair', 'dual_guide_pair' or 'high_moi', "
                 f"got {guide_cfg.assignment_mode!r}"
             )
+        if guide_cfg.calling_method not in ("dominance", "fishash", "poisson_gauss"):
+            raise ValueError(
+                f"guides.calling_method must be 'dominance', 'fishash' or 'poisson_gauss', got {guide_cfg.calling_method!r}"
+            )
+        if guide_cfg.calling_method != "dominance" and guide_cfg.assignment_mode != "single_guide":
+            raise ValueError(
+                "guides.calling_method applies to assignment_mode 'single_guide' only "
+                "(high_moi uses guides.high_moi.method)"
+            )
+        fh = guide_cfg.fishash
+        if not 0 < fh.fdr < 1:
+            raise ValueError(f"guides.fishash.fdr must be in (0, 1), got {fh.fdr!r}")
+        if fh.min_count < 1 or fh.refit < 0:
+            raise ValueError("guides.fishash.min_count must be >= 1 and refit >= 0")
+        if guide_cfg.poisson_gauss.min_count < 1 or guide_cfg.poisson_gauss.min_cells < 1:
+            raise ValueError("guides.poisson_gauss.min_count and min_cells must be >= 1")
         hm = guide_cfg.high_moi
-        if hm.method not in ("threshold", "knee"):
-            raise ValueError(f"guides.high_moi.method must be 'threshold' or 'knee', got {hm.method!r}")
+        if hm.method not in ("threshold", "knee", "fishash", "poisson_gauss"):
+            raise ValueError(
+                f"guides.high_moi.method must be 'threshold', 'knee', 'fishash' or 'poisson_gauss', got {hm.method!r}"
+            )
         if hm.min_umi < 1:
             raise ValueError("guides.high_moi.min_umi must be >= 1")
         if not (0 <= hm.min_frac_of_top < 1):

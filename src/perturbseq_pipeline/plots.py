@@ -488,8 +488,9 @@ def plot_guide_qc(expr, guides, reg: FigureRegistry, cfg: Config) -> None:
             ax.legend(markerscale=3, fontsize=8, frameon=False)
         else:
             ax.scatter(x, y, s=4, alpha=0.5, linewidths=0, rasterized=True)
-        lim = np.array([1, max(x.max(), y.max())])
-        ax.plot(lim, lim / cfg.guides.dominance_ratio, ls="--", lw=1)
+        if cfg.guides.calling_method == "dominance":
+            lim = np.array([1, max(x.max(), y.max())])
+            ax.plot(lim, lim / cfg.guides.dominance_ratio, ls="--", lw=1)
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("Highest guide count + 1")
