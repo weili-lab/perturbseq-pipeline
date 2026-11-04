@@ -425,11 +425,12 @@ def guide_qc_summary(expr: ad.AnnData, cfg: Config) -> pd.DataFrame:
     rows: List[Tuple[str, object]] = [("Cells after QC", f"{n:,}")]
     if OBS_CLASS in obs.columns:
         counts = obs[OBS_CLASS].value_counts()
+        per_guide_calls = cfg.guides.calling_method != "dominance"
         for label, key in [
             ("Cells with a targeting guide", CLASS_TARGETING),
             ("Cells with a non-targeting guide", CLASS_NTC),
-            ("Ambiguous (no dominant guide)", CLASS_AMBIGUOUS),
-            ("Unassigned (no guide counts)", CLASS_UNASSIGNED),
+            ("Ambiguous (2+ called guides)" if per_guide_calls else "Ambiguous (no dominant guide)", CLASS_AMBIGUOUS),
+            ("Unassigned (no called guide)" if per_guide_calls else "Unassigned (no guide counts)", CLASS_UNASSIGNED),
         ]:
             count = int(counts.get(key, 0))
             rows.append((label, (f"{count:,} ({100 * count / max(n, 1):.1f}%)")))
@@ -492,9 +493,15 @@ def check_guide_qc(expr: ad.AnnData, cfg: Config) -> List[str]:
     if frac < 0.5:
         warnings.append(
             f"Only {100 * frac:.1f}% of cells received a confident guide call. "
-            f"Consider lowering guides.min_umi "
-            f"(currently {cfg.guides.min_umi}) or guides.dominance_ratio "
-            f"(currently {cfg.guides.dominance_ratio})."
+            + (
+                f"Consider raising guides.fishash.fdr (currently {cfg.guides.fishash.fdr})."
+                if cfg.guides.calling_method == "fishash"
+                else f"Consider lowering guides.poisson_gauss.min_count (currently {cfg.guides.poisson_gauss.min_count})."
+                if cfg.guides.calling_method == "poisson_gauss"
+                else f"Consider lowering guides.min_umi "
+                f"(currently {cfg.guides.min_umi}) or guides.dominance_ratio "
+                f"(currently {cfg.guides.dominance_ratio})."
+            )
         )
     if int(counts.get(CLASS_NTC, 0)) == 0:
         warnings.append(
@@ -506,7 +513,8 @@ def check_guide_qc(expr: ad.AnnData, cfg: Config) -> List[str]:
     if ambiguous / max(n, 1) > 0.3:
         warnings.append(
             f"{100 * ambiguous / max(n, 1):.1f}% of cells are ambiguous "
-            "(no dominant guide). This can indicate high MOI or "
+            + ("(2+ called guides)" if cfg.guides.calling_method != "dominance" else "(no dominant guide)")
+            + ". This can indicate high MOI or "
             "guide-index swapping."
         )
     if OBS_NDETECTED in obs.columns:
@@ -536,8 +544,14 @@ def _check_guide_qc_high_moi(expr: ad.AnnData, cfg: Config) -> List[str]:
     if frac < 0.5:
         warnings.append(
             f"Only {100 * frac:.1f}% of cells received at least one called guide. "
-            f"Consider lowering guides.high_moi.min_umi (currently {hcfg.min_umi}) or "
-            f"guides.high_moi.min_frac_of_top (currently {hcfg.min_frac_of_top})."
+            + (
+                f"Consider raising guides.fishash.fdr (currently {cfg.guides.fishash.fdr})."
+                if hcfg.method == "fishash"
+                else f"Consider lowering guides.poisson_gauss.min_count (currently {cfg.guides.poisson_gauss.min_count})."
+                if hcfg.method == "poisson_gauss"
+                else f"Consider lowering guides.high_moi.min_umi (currently {hcfg.min_umi}) or "
+                f"guides.high_moi.min_frac_of_top (currently {hcfg.min_frac_of_top})."
+            )
         )
     n_ntc_only = int(obs[OBS_NTC_ONLY].sum())
     if n_ntc_only < cfg.perturbation.min_control_cells:

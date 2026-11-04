@@ -57,6 +57,7 @@ import pandas as pd
 from scipy import sparse
 
 from .config import Config, GuideConfig
+from .guide_calling import call_fishash, call_poisson_gauss
 from .io import RAW_GUIDE_LABEL
 
 logger = logging.getLogger(__name__)
@@ -466,24 +467,36 @@ def _assign_from_matrix(expr: ad.AnnData, guides: ad.AnnData, cfg: Config) -> ad
     guide_ids = aligned_guides.var_names.to_numpy().astype(str)
     guide_targets = resolve_guide_targets(aligned_guides, gcfg)
     # Assignment gate
-    assigned = (top_val >= max(gcfg.min_umi, 1)) & (top_val > gcfg.dominance_ratio * second_val)
-    if gcfg.max_second_umi is not None and gcfg.max_second_umi >= 0:
-        n_before = int(assigned.sum())
-        assigned &= second_val <= gcfg.max_second_umi
-        logger.info(
-            "Multiplet gate (second guide <= %d UMIs): %d -> %d assigned cells",
-            gcfg.max_second_umi,
-            n_before,
-            int(assigned.sum()),
-        )
-    has_counts = top_val > 0
+    if gcfg.calling_method != "dominance":
+        if gcfg.calling_method == "fishash":
+            calls = call_fishash(sparse.csr_matrix(X), gcfg.fishash.fdr, gcfg.fishash.min_count, gcfg.fishash.refit)
+        else:
+            calls = call_poisson_gauss(sparse.csr_matrix(X), gcfg.poisson_gauss.min_count, gcfg.poisson_gauss.min_cells)
+        n_called = np.diff(calls.indptr)
+        assigned = n_called == 1
+        ambiguous = n_called >= 2
+        # the called guide, which need not be the cell's top-UMI guide
+        call_idx = np.zeros(expr.n_obs, dtype=np.int64)
+        call_idx[assigned] = calls.indices[calls.indptr[:-1][assigned]]
+    else:
+        assigned = (top_val >= max(gcfg.min_umi, 1)) & (top_val > gcfg.dominance_ratio * second_val)
+        if gcfg.max_second_umi is not None and gcfg.max_second_umi >= 0:
+            n_before = int(assigned.sum())
+            assigned &= second_val <= gcfg.max_second_umi
+            logger.info(
+                "Multiplet gate (second guide <= %d UMIs): %d -> %d assigned cells",
+                gcfg.max_second_umi,
+                n_before,
+                int(assigned.sum()),
+            )
+        ambiguous = (top_val > 0) & ~assigned
+        call_idx = top_idx
     guide_call = np.full(expr.n_obs, gcfg.unassigned_label, dtype=object)
     target_call = np.full(expr.n_obs, gcfg.unassigned_label, dtype=object)
-    ambiguous = has_counts & ~assigned
     guide_call[ambiguous] = gcfg.ambiguous_label
     target_call[ambiguous] = gcfg.ambiguous_label
-    guide_call[assigned] = guide_ids[top_idx[assigned]]
-    target_call[assigned] = guide_targets[top_idx[assigned]]
+    guide_call[assigned] = guide_ids[call_idx[assigned]]
+    target_call[assigned] = guide_targets[call_idx[assigned]]
     # Diagnostics
     expr.obs[OBS_TOP] = top_val
     expr.obs[OBS_SECOND] = second_val
