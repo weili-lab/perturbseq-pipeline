@@ -159,7 +159,7 @@ def call_fishash(X: sparse.csr_matrix, fdr: float, min_count: int, refit: int) -
         log_cutoff = _guo_sarkar_log_cutoff(log_p, X.indptr, n_tests_per_cell, n_tests, n_cells, fdr)
         previous, called = called, (log_p <= log_cutoff) & (counts >= min_count)
         mask = called if iteration <= 3 else (mask | called)
-        if previous is not None and np.array_equal(previous, called):
+        if mask.all() or (previous is not None and np.array_equal(previous, called)):
             break
     calls = sparse.csr_matrix((called.astype(np.int8), cols.copy(), X.indptr.copy()), shape=X.shape)
     calls.eliminate_zeros()
