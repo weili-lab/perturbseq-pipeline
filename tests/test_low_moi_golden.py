@@ -49,6 +49,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.optimize import linear_sum_assignment
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -144,17 +145,6 @@ def _cell_matches(ev: Any, av: Any, is_float: bool) -> bool:
     return (np.isnan(e) and np.isnan(a)) or bool(np.isclose(a, e, rtol=FLOAT_RTOL, atol=FLOAT_ATOL))
 
 
-def _float_sort_key(row: List[Any], float_idx: List[int]) -> tuple:
-    out = []
-    for i in float_idx:
-        try:
-            v = _as_float(row[i])
-        except (TypeError, ValueError):
-            v = np.inf
-        out.append((np.isnan(v), 0.0 if np.isnan(v) else v))
-    return tuple(out)
-
-
 def _compare_table(name: str, expected: Dict[str, Any], actual: Dict[str, Any]) -> List[str]:
     """Return human-readable problems; empty when the tables agree.
 
@@ -163,9 +153,10 @@ def _compare_table(name: str, expected: Dict[str, Any], actual: Dict[str, Any]) 
     ``14.0001``) cannot opt itself into tolerant comparison. Rows are aligned
     by their exact (non-float) columns rather than by position, so float noise
     can never re-order rows and misalign them; rows sharing an exact key are
-    paired tolerance-aware (each golden row takes the first unused output row
-    whose floats all match), and any leftovers are paired in full-precision
-    float order to report what changed.
+    paired by an optimal one-to-one assignment that minimises the number of
+    out-of-tolerance cells, so a valid tolerance-aware pairing is always found
+    when one exists (a greedy first match can miss it), and otherwise the
+    closest pairing is the one reported.
     """
     if expected["columns"] != actual["columns"]:
         exp, act = set(expected["columns"]), set(actual["columns"])
@@ -194,22 +185,18 @@ def _compare_table(name: str, expected: Dict[str, Any], actual: Dict[str, Any]) 
 
         return [f"{name}: rows changed in non-float columns — missing {fmt(gone)}; new {fmt(new)}"]
     for key, erows in exp_groups.items():
-        unused = list(act_groups[key])
-        unmatched = []
-        for erow in erows:
-            hit = next(
-                (j for j, arow in enumerate(unused) if all(_cell_matches(erow[i], arow[i], True) for i in float_idx)),
-                None,
+        arows = act_groups[key]
+        if len(erows) == 1:
+            pairs = [(erows[0], arows[0])]
+        else:
+            # cost = out-of-tolerance cells; a zero-cost assignment exists iff the rows match.
+            cost = np.array(
+                [[sum(not _cell_matches(e[i], a[i], True) for i in float_idx) for a in arows] for e in erows]
             )
-            if hit is None:
-                unmatched.append(erow)
-            else:
-                unused.pop(hit)
+            rows_e, rows_a = linear_sum_assignment(cost)
+            pairs = [(erows[r], arows[c]) for r, c in zip(rows_e, rows_a)]
         label = ", ".join(f"{cols[i]}={v}" for i, v in zip(exact_idx, key)) or "row"
-        for erow, arow in zip(
-            sorted(unmatched, key=lambda r: _float_sort_key(r, float_idx)),
-            sorted(unused, key=lambda r: _float_sort_key(r, float_idx)),
-        ):
+        for erow, arow in pairs:
             for i in float_idx:
                 if not _cell_matches(erow[i], arow[i], True):
                     cells.append(f"[{label}] {cols[i]}: {erow[i]!r} -> {arow[i]!r}")
@@ -485,6 +472,12 @@ def test_table_comparison_tolerates_build_noise_but_not_real_changes():
     dup_golden = _canon_table(dup)
     assert _compare_table("t", dup_golden, _canon_table(dup.assign(fdr_mwu=[9.999951e-07, 9.9999e-06]))) == []
     assert _compare_table("t", dup_golden, _canon_table(dup.assign(lfc=[-1.0, 0.6])))
+    # Overlapping candidates: a greedy first match pairs golden row 0 with output row 0 and then
+    # fails row 1, although the crossed pairing is within tolerance everywhere.
+    ovl = pd.DataFrame({"k": ["A", "A"], "x": [1.0, 1.00001], "y": [1.0, 1.00015]})
+    ovl_out = pd.DataFrame({"k": ["A", "A"], "x": [0.99999, 1.00002], "y": [1.000075, 0.999925]})
+    assert _compare_table("t", _canon_table(ovl), _canon_table(ovl_out)) == []
+    assert _compare_table("t", _canon_table(ovl), _canon_table(ovl_out.assign(y=[1.000075, 0.9])))
 
 
 def test_report_canonicalisation_neutralises_run_specific_lines(tmp_path):
