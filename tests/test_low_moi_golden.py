@@ -100,8 +100,10 @@ def _canon_table(df: pd.DataFrame) -> Dict[str, Any]:
     """Canonical, JSON-serialisable form of a table for tolerant comparison.
 
     Columns are sorted by name and rows lexicographically (floats rounded to 5
-    significant digits *for ordering only*); float columns keep full precision
-    so they can be compared with a tolerance, everything else is a string.
+    significant digits *for ordering only* -- this just keeps the stored file
+    stable; ``_compare_table`` aligns rows by content, not position); float
+    columns keep full precision so they can be compared with a tolerance,
+    everything else is a string.
     """
     cols = sorted(df.columns.astype(str))
     df = df.copy()
@@ -132,24 +134,85 @@ def _as_float(v: Any) -> float:
     return float(v)  # "nan" / "inf" / "-inf" strings and numbers alike
 
 
+def _cell_matches(ev: Any, av: Any, is_float: bool) -> bool:
+    if not is_float:
+        return str(ev) == str(av)
+    try:
+        e, a = _as_float(ev), _as_float(av)
+    except (TypeError, ValueError):  # e.g. a label where a number is expected
+        return False
+    return (np.isnan(e) and np.isnan(a)) or bool(np.isclose(a, e, rtol=FLOAT_RTOL, atol=FLOAT_ATOL))
+
+
+def _float_sort_key(row: List[Any], float_idx: List[int]) -> tuple:
+    out = []
+    for i in float_idx:
+        try:
+            v = _as_float(row[i])
+        except (TypeError, ValueError):
+            v = np.inf
+        out.append((np.isnan(v), 0.0 if np.isnan(v) else v))
+    return tuple(out)
+
+
 def _compare_table(name: str, expected: Dict[str, Any], actual: Dict[str, Any]) -> List[str]:
-    """Return human-readable problems; empty when the tables agree."""
+    """Return human-readable problems; empty when the tables agree.
+
+    Which columns are compared with a tolerance comes from the *golden* schema
+    only, so an output whose integer/label column turns fractional (``14`` ->
+    ``14.0001``) cannot opt itself into tolerant comparison. Rows are aligned
+    by their exact (non-float) columns rather than by position, so float noise
+    can never re-order rows and misalign them; rows sharing an exact key are
+    paired tolerance-aware (each golden row takes the first unused output row
+    whose floats all match), and any leftovers are paired in full-precision
+    float order to report what changed.
+    """
     if expected["columns"] != actual["columns"]:
         exp, act = set(expected["columns"]), set(actual["columns"])
         return [f"{name}: columns changed (removed {sorted(exp - act)}, added {sorted(act - exp)})"]
     if len(expected["rows"]) != len(actual["rows"]):
         return [f"{name}: row count {len(expected['rows'])} -> {len(actual['rows'])}"]
-    floats = set(expected["float_columns"]) | set(actual["float_columns"])
-    cells = []
-    for r, (erow, arow) in enumerate(zip(expected["rows"], actual["rows"])):
-        for c, ev, av in zip(expected["columns"], erow, arow):
-            if c in floats:
-                e, a = _as_float(ev), _as_float(av)
-                same = (np.isnan(e) and np.isnan(a)) or bool(np.isclose(a, e, rtol=FLOAT_RTOL, atol=FLOAT_ATOL))
+    cols = expected["columns"]
+    floats = set(expected["float_columns"])
+    exact_idx = [i for i, c in enumerate(cols) if c not in floats]
+    float_idx = [i for i, c in enumerate(cols) if c in floats]
+
+    def group(rows: List[List[Any]]) -> Dict[tuple, List[List[Any]]]:
+        groups: Dict[tuple, List[List[Any]]] = {}
+        for row in rows:
+            groups.setdefault(tuple(str(row[i]) for i in exact_idx), []).append(row)
+        return groups
+
+    exp_groups, act_groups = group(expected["rows"]), group(actual["rows"])
+    cells: List[str] = []
+    gone = [k for k in exp_groups if len(act_groups.get(k, ())) < len(exp_groups[k])]
+    new = [k for k in act_groups if len(exp_groups.get(k, ())) < len(act_groups[k])]
+    if gone or new:
+        def fmt(keys: List[tuple]) -> str:
+            shown = ", ".join(repr(dict(zip([cols[i] for i in exact_idx], k))) for k in keys[:MAX_REPORTED_CELLS])
+            return shown + (f" (+{len(keys) - MAX_REPORTED_CELLS} more)" if len(keys) > MAX_REPORTED_CELLS else "")
+
+        return [f"{name}: rows changed in non-float columns — missing {fmt(gone)}; new {fmt(new)}"]
+    for key, erows in exp_groups.items():
+        unused = list(act_groups[key])
+        unmatched = []
+        for erow in erows:
+            hit = next(
+                (j for j, arow in enumerate(unused) if all(_cell_matches(erow[i], arow[i], True) for i in float_idx)),
+                None,
+            )
+            if hit is None:
+                unmatched.append(erow)
             else:
-                same = str(ev) == str(av)
-            if not same:
-                cells.append(f"row {r} {c}: {ev!r} -> {av!r}")
+                unused.pop(hit)
+        label = ", ".join(f"{cols[i]}={v}" for i, v in zip(exact_idx, key)) or "row"
+        for erow, arow in zip(
+            sorted(unmatched, key=lambda r: _float_sort_key(r, float_idx)),
+            sorted(unused, key=lambda r: _float_sort_key(r, float_idx)),
+        ):
+            for i in float_idx:
+                if not _cell_matches(erow[i], arow[i], True):
+                    cells.append(f"[{label}] {cols[i]}: {erow[i]!r} -> {arow[i]!r}")
     if not cells:
         return []
     shown = "; ".join(cells[:MAX_REPORTED_CELLS])
@@ -408,6 +471,20 @@ def test_table_comparison_tolerates_build_noise_but_not_real_changes():
     assert _compare_table("t", golden, _canon_table(base.assign(n_cells=[14, 21])))
     assert _compare_table("t", golden, _canon_table(base.assign(ks_pval=[0.5, 1e-20])))  # NaN -> value
     assert "columns changed" in _compare_table("t", golden, _canon_table(base.drop(columns="n_cells")))[0]
+    # An exact column turning fractional is a real change, even if within the float tolerance.
+    assert _compare_table("t", golden, _canon_table(base.assign(n_cells=[14.0001, 20.0])))
+    # Within-tolerance noise that flips the 5-s.f. sort order must not misalign rows.
+    near = pd.DataFrame({"target_gene": ["A", "B"], "fdr_mwu": [9.999949e-07, 2e-06], "lfc": [-1.0, 0.5]})
+    near_golden = _canon_table(near)
+    flipped = _canon_table(near.assign(fdr_mwu=[9.999951e-07, 2e-06]))
+    gene = near_golden["columns"].index("target_gene")
+    assert [r[gene] for r in flipped["rows"]] != [r[gene] for r in near_golden["rows"]]  # stored order did flip
+    assert _compare_table("t", near_golden, flipped) == []
+    # ... including among rows that share every exact column (paired tolerance-aware).
+    dup = pd.DataFrame({"target_gene": ["A", "A"], "fdr_mwu": [9.999949e-07, 9.9999e-06], "lfc": [-1.0, 0.5]})
+    dup_golden = _canon_table(dup)
+    assert _compare_table("t", dup_golden, _canon_table(dup.assign(fdr_mwu=[9.999951e-07, 9.9999e-06]))) == []
+    assert _compare_table("t", dup_golden, _canon_table(dup.assign(lfc=[-1.0, 0.6])))
 
 
 def test_report_canonicalisation_neutralises_run_specific_lines(tmp_path):
